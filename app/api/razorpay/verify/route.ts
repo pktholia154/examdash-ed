@@ -1,26 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  signEntitlementProof,
+  getRazorpayServerConfig,
   verifyRazorpaySignature,
   VerifyPaymentRequestSchema,
 } from '@/core/payments/razorpay';
+import { fetchRazorpayOrder, fetchRazorpayPayment } from '@/core/payments/razorpay-api';
+import { fulfillVerifiedRazorpayOrder } from '@/core/payments/fulfillment';
 import { extractBearerToken, verifyFirebaseIdToken } from '@/lib/firebase/server-auth';
-import { fetchPublishedBooks, fetchPublishedExams } from '@/lib/firebase/server-catalog';
-import type { PurchasedItem } from '@/lib/design-system/types';
 
 export const runtime = 'nodejs';
 
-function makePurchaseId(contentType: string, itemId: string): string {
-  return `${contentType}_${itemId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
-}
-
 export async function POST(req: NextRequest) {
   try {
-    const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
-    if (!keySecret) {
+    const config = getRazorpayServerConfig();
+    if (!config) {
       return NextResponse.json(
-        { error: 'Razorpay secret is not configured on the server.' },
-        { status: 500 }
+        { error: 'Razorpay payment gateway is not configured on the server.' },
+        { status: 503 }
       );
     }
 
@@ -31,25 +27,26 @@ export async function POST(req: NextRequest) {
 
     const verifiedUser = await verifyFirebaseIdToken(token);
     if (!verifiedUser) {
-      return NextResponse.json({ error: 'Invalid or expired Google session.' }, { status: 401 });
+      return NextResponse.json({ error: 'Invalid or expired session.' }, { status: 401 });
     }
 
     const body = await req.json().catch(() => null);
     const parsed = VerifyPaymentRequestSchema.safeParse(body);
     if (!parsed.success) {
       return NextResponse.json(
-        { error: 'Invalid payment verification payload.' },
+        { error: 'Invalid payment verification payload.', details: parsed.error.flatten() },
         { status: 400 }
       );
     }
 
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, items } = parsed.data;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, orderToken } = parsed.data;
 
+    // Layer 1: Timing-safe HMAC-SHA256 verification of Razorpay checkout signature
     const isSignatureValid = verifyRazorpaySignature(
       razorpay_order_id,
       razorpay_payment_id,
       razorpay_signature,
-      keySecret
+      config.keySecret
     );
 
     if (!isSignatureValid) {
@@ -59,50 +56,59 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const [books, exams] = await Promise.all([fetchPublishedBooks(), fetchPublishedExams()]);
-    const bookMap = new Map(books.map((b) => [b.id, b]));
-    const examMap = new Map(exams.map((e) => [e.id, e]));
-    const nowIso = new Date().toISOString();
+    // Layer 2: Authoritative server-to-server cross-check against Razorpay Orders & Payments APIs
+    const [orderRes, paymentRes] = await Promise.all([
+      fetchRazorpayOrder(config, razorpay_order_id),
+      fetchRazorpayPayment(config, razorpay_payment_id),
+    ]);
 
-    const purchases: PurchasedItem[] = [];
-    for (const line of items) {
-      const catalogItem =
-        line.contentType === 'books' ? bookMap.get(line.itemId) : examMap.get(line.itemId);
-      if (!catalogItem) continue;
-
-      const entitlementProof = signEntitlementProof(
-        {
-          uid: verifiedUser.uid,
-          itemId: catalogItem.id,
-          contentType: line.contentType,
-          orderId: razorpay_order_id,
-          paymentId: razorpay_payment_id,
-        },
-        keySecret
+    if (!orderRes.ok) {
+      return NextResponse.json(
+        { verified: false, error: `Could not verify Razorpay order: ${orderRes.error}` },
+        { status: orderRes.status === 504 ? 504 : 502 }
       );
-
-      purchases.push({
-        id: makePurchaseId(line.contentType, catalogItem.id),
-        itemId: catalogItem.id,
-        contentType: line.contentType,
-        title: catalogItem.title,
-        urlSlug: catalogItem.urlSlug,
-        currency: catalogItem.currency || 'INR',
-        amountPaid: catalogItem.buyPrice * line.quantity,
-        razorpayOrderId: razorpay_order_id,
-        razorpayPaymentId: razorpay_payment_id,
-        entitlementProof,
-        status: 'completed',
-        purchasedAt: nowIso,
-      });
     }
 
-    return NextResponse.json({
-      verified: true,
-      orderId: razorpay_order_id,
-      paymentId: razorpay_payment_id,
-      purchases,
+    if (!paymentRes.ok) {
+      return NextResponse.json(
+        { verified: false, error: `Could not verify Razorpay payment: ${paymentRes.error}` },
+        { status: paymentRes.status === 504 ? 504 : 502 }
+      );
+    }
+
+    // Layer 3 & 4: Ownership, capture enforcement, signed manifest verification & entitlement issuance
+    const fulfillment = await fulfillVerifiedRazorpayOrder({
+      config,
+      uid: verifiedUser.uid,
+      order: orderRes.data,
+      payment: paymentRes.data,
+      orderToken,
     });
+
+    if (!fulfillment.ok) {
+      return NextResponse.json(
+        { verified: false, error: fulfillment.error },
+        { status: fulfillment.status }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        verified: true,
+        orderId: fulfillment.orderId,
+        paymentId: fulfillment.paymentId,
+        paymentMethod: fulfillment.paymentMethod,
+        amountPaidSubunits: fulfillment.amountPaidSubunits,
+        currency: fulfillment.currency,
+        capturedNow: fulfillment.capturedNow,
+        purchases: fulfillment.purchases,
+      },
+      {
+        headers: {
+          'Cache-Control': 'private, no-store, max-age=0',
+        },
+      }
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Unable to verify payment.' },

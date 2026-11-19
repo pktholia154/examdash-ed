@@ -7,14 +7,18 @@ import {
   ArrowRight,
   BarChart3,
   BookOpen,
+  Check,
   CheckCircle2,
   ClipboardCheck,
   Clock,
+  Copy,
   FileText,
   Library,
   Loader2,
   LogIn,
   Play,
+  Receipt,
+  RefreshCw,
   Search,
   ShoppingBag,
 } from 'lucide-react';
@@ -45,7 +49,7 @@ export interface PurchasedLibraryTemplateProps {
   readonly exams: readonly PublicExamPackDTO[];
 }
 
-type LibraryFilter = 'all' | 'books' | 'exams';
+type LibraryFilter = 'all' | 'books' | 'exams' | 'receipts';
 
 export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTemplateProps) {
   const router = useRouter();
@@ -66,18 +70,25 @@ export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTempl
     checkoutBusy,
     checkoutError,
     lastOrderReceipt,
+    pendingOrder,
+    reconcileBusy,
+    reconcileMessage,
     signIn,
     signOut,
     removeFromCart,
     updateCartQuantity,
     clearCart,
     checkoutCart,
+    reconcileOrder,
+    dismissPendingOrder,
     saveReadingProgress,
     getReadingProgress,
   } = useAppSession();
 
   const [filter, setFilter] = useState<LibraryFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [manualOrderId, setManualOrderId] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [loadedFullSetsByPack, setLoadedFullSetsByPack] = useState<
     Record<string, NormalizedExamSet[]>
   >({});
@@ -202,20 +213,21 @@ export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTempl
   );
 
   const filteredBooks = useMemo(() => {
-    if (filter === 'exams') return [];
+    if (filter === 'exams' || filter === 'receipts') return [];
     const q = searchQuery.trim().toLowerCase();
     return purchasedBooks.filter((item) => {
       if (!q) return true;
       return (
         item.title.toLowerCase().includes(q) ||
         item.razorpayOrderId.toLowerCase().includes(q) ||
+        item.razorpayPaymentId.toLowerCase().includes(q) ||
         item.itemId.toLowerCase().includes(q)
       );
     });
   }, [filter, purchasedBooks, searchQuery]);
 
   const filteredExamSets = useMemo(() => {
-    if (filter === 'books') return [];
+    if (filter === 'books' || filter === 'receipts') return [];
     const q = searchQuery.trim().toLowerCase();
     return flattenedExamSets.filter((set) => {
       if (!q) return true;
@@ -227,12 +239,55 @@ export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTempl
     });
   }, [filter, flattenedExamSets, searchQuery]);
 
-  const hasVisibleContent = filteredBooks.length > 0 || filteredExamSets.length > 0;
+  const filteredReceipts = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return purchasedItems.filter((item) => {
+      if (!q) return true;
+      return (
+        item.title.toLowerCase().includes(q) ||
+        item.razorpayOrderId.toLowerCase().includes(q) ||
+        item.razorpayPaymentId.toLowerCase().includes(q)
+      );
+    });
+  }, [purchasedItems, searchQuery]);
+
+  const hasVisibleContent =
+    filter === 'receipts'
+      ? true
+      : filteredBooks.length > 0 || filteredExamSets.length > 0;
+
+  const handleCopyText = (text: string) => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(text).then(() => {
+        setCopiedId(text);
+        window.setTimeout(() => setCopiedId((curr) => (curr === text ? null : curr)), 1800);
+      });
+    }
+  };
+
+  const handleManualReconcile = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmed = manualOrderId.trim();
+    if (!trimmed) return;
+    const res = await reconcileOrder(trimmed);
+    if (res?.status === 'completed') {
+      setManualOrderId('');
+      router.replace(`/purchased?order=${encodeURIComponent(res.orderId)}`);
+    }
+  };
 
   const handleCartCheckout = async () => {
     const receipt = await checkoutCart();
     if (receipt) {
       router.push(`/purchased?order=${encodeURIComponent(receipt.orderId)}`);
+    }
+  };
+
+  const handlePendingReconcile = async () => {
+    const res = await reconcileOrder();
+    if (res?.status === 'completed') {
+      setCartOpen(false);
+      router.replace(`/purchased?order=${encodeURIComponent(res.orderId)}`);
     }
   };
 
@@ -295,7 +350,7 @@ export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTempl
               />
               <div>
                 <p className="text-sm font-semibold text-[var(--text-primary)]">
-                  Payment Verified — Full Editions & All Mock Sets Unlocked
+                  Payment Verified — Full Editions &amp; All Mock Sets Unlocked
                 </p>
                 <p className="font-mono-tabular mt-0.5 text-xs text-[var(--text-secondary)]">
                   Order {confirmedOrderId || lastOrderReceipt?.orderId}
@@ -307,6 +362,62 @@ export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTempl
               Ready to attempt or read below
             </span>
           </section>
+        )}
+
+        {/* Interrupted Razorpay Payment Auto-Recovery Banner */}
+        {pendingOrder && user && (
+          <section
+            role="status"
+            aria-label="Pending Razorpay payment verification"
+            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-strong)] bg-[var(--surface-subtle)] px-5 py-4"
+          >
+            <div className="space-y-0.5">
+              <p className="text-sm font-semibold text-[var(--text-primary)]">
+                Pending Razorpay Order Detected
+              </p>
+              <p className="font-mono-tabular text-xs text-[var(--text-secondary)]">
+                Order {pendingOrder.orderId}
+                {pendingOrder.amountSubunits > 0
+                  ? ` · ${formatPrice(pendingOrder.amountSubunits / 100, pendingOrder.currency)}`
+                  : ''}
+              </p>
+              <p className="text-xs text-[var(--text-muted)]">
+                If money was debited via UPI or card before the screen refreshed, verify now to unlock immediately.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handlePendingReconcile()}
+                disabled={reconcileBusy}
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg bg-[var(--brand-ink)] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[var(--brand-ink-hover)] disabled:opacity-60"
+              >
+                {reconcileBusy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                <span>{reconcileBusy ? 'Verifying...' : 'Verify & Unlock'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={dismissPendingOrder}
+                disabled={reconcileBusy}
+                className="min-h-[40px] rounded-lg border border-[var(--border-strong)] bg-[var(--surface-canvas)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]"
+              >
+                Dismiss
+              </button>
+            </div>
+          </section>
+        )}
+
+        {reconcileMessage && user && (
+          <p
+            role="status"
+            className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-subtle)] px-4 py-2.5 text-xs text-[var(--text-secondary)]"
+          >
+            {reconcileMessage}
+          </p>
         )}
 
         {authError && (
@@ -368,6 +479,7 @@ export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTempl
                     },
                     { key: 'exams', label: `Mock Tests (${flattenedExamSets.length})` },
                     { key: 'books', label: `Books (${purchasedBooks.length})` },
+                    { key: 'receipts', label: `Receipts (${purchasedItems.length})` },
                   ] as const
                 ).map((tab) => (
                   <button
@@ -608,6 +720,9 @@ export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTempl
                                   <p className="font-mono-tabular mt-0.5 text-xs text-[var(--text-muted)]">
                                     Paid {formatPrice(purchase.amountPaid, purchase.currency)} · Order{' '}
                                     {purchase.razorpayOrderId}
+                                    {purchase.razorpayPaymentId
+                                      ? ` · Payment ${purchase.razorpayPaymentId}`
+                                      : ''}
                                   </p>
                                 </div>
 
@@ -680,6 +795,152 @@ export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTempl
                     </ul>
                   </section>
                 )}
+
+                {/* 3. RAZORPAY PAYMENT RECEIPTS & ORDER RECOVERY */}
+                {filter === 'receipts' && (
+                  <section aria-labelledby="receipts-heading" className="space-y-6">
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <Receipt className="h-4 w-4 text-[var(--text-primary)]" aria-hidden="true" />
+                          <h2
+                            id="receipts-heading"
+                            className="text-base font-bold text-[var(--text-primary)]"
+                          >
+                            Razorpay Payment Receipts ({filteredReceipts.length})
+                          </h2>
+                        </div>
+                        <div className="flex items-center gap-4 text-xs text-[var(--text-muted)]">
+                          <Link
+                            href="/refund-policy"
+                            className="underline underline-offset-4 hover:text-[var(--text-primary)]"
+                          >
+                            Refund Policy
+                          </Link>
+                          <Link
+                            href="/contact-us"
+                            className="underline underline-offset-4 hover:text-[var(--text-primary)]"
+                          >
+                            Billing Support
+                          </Link>
+                        </div>
+                      </div>
+
+                      {filteredReceipts.length === 0 ? (
+                        <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-subtle)] p-6 text-center text-sm text-[var(--text-secondary)]">
+                          No completed Razorpay receipts found for this account yet.
+                        </div>
+                      ) : (
+                        <ul className="divide-y divide-[var(--border-subtle)] rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-canvas)]">
+                          {filteredReceipts.map((purchase) => {
+                            const purchasedDateLabel = new Date(
+                              purchase.purchasedAt
+                            ).toLocaleString('en-IN', {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            });
+                            return (
+                              <li
+                                key={purchase.id}
+                                className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5"
+                              >
+                                <div className="min-w-0 space-y-1">
+                                  <p className="text-xs font-medium text-[var(--text-muted)]">
+                                    {purchase.contentType === 'exams'
+                                      ? 'Online Exam Pack'
+                                      : 'Full Book Edition'}{' '}
+                                    · Verified · {purchasedDateLabel}
+                                  </p>
+                                  <h3 className="text-sm font-bold text-[var(--text-primary)] sm:text-base">
+                                    {purchase.title}
+                                  </h3>
+                                  <div className="font-mono-tabular flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--text-secondary)]">
+                                    <span>Order: {purchase.razorpayOrderId}</span>
+                                    {purchase.razorpayPaymentId && (
+                                      <>
+                                        <span aria-hidden="true">·</span>
+                                        <span>Payment: {purchase.razorpayPaymentId}</span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex shrink-0 flex-wrap items-center gap-3">
+                                  <span className="font-mono-tabular text-sm font-bold text-[var(--text-primary)]">
+                                    {formatPrice(purchase.amountPaid, purchase.currency)}
+                                  </span>
+                                  {purchase.razorpayPaymentId && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCopyText(purchase.razorpayPaymentId)}
+                                      className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-canvas)] px-3 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--surface-hover)]"
+                                    >
+                                      {copiedId === purchase.razorpayPaymentId ? (
+                                        <>
+                                          <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                                          <span>Copied ID</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                                          <span>Copy Payment ID</span>
+                                        </>
+                                      )}
+                                    </button>
+                                  )}
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
+
+                    {/* Manual Order Verification / Recovery Tool */}
+                    <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-subtle)] p-5 space-y-3">
+                      <div className="space-y-1">
+                        <h3 className="text-sm font-bold text-[var(--text-primary)]">
+                          Verify or Recover a Razorpay Order
+                        </h3>
+                        <p className="text-xs text-[var(--text-secondary)]">
+                          If your payment was debited via UPI, card, or netbanking but the browser closed before unlocking, enter your Razorpay Order ID (starts with <code className="font-mono-tabular">order_</code>) to verify directly with Razorpay.
+                        </p>
+                      </div>
+
+                      <form
+                        onSubmit={(e) => void handleManualReconcile(e)}
+                        className="flex flex-col gap-2 sm:flex-row"
+                      >
+                        <label htmlFor="manual-razorpay-order-id" className="sr-only">
+                          Razorpay Order ID
+                        </label>
+                        <input
+                          id="manual-razorpay-order-id"
+                          type="text"
+                          value={manualOrderId}
+                          onChange={(e) => setManualOrderId(e.target.value)}
+                          placeholder="e.g. order_Q1a2B3c4D5e6F7"
+                          className="font-mono-tabular h-11 flex-1 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-canvas)] px-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--brand-ink)] focus:outline-none"
+                        />
+                        <button
+                          type="submit"
+                          disabled={reconcileBusy || manualOrderId.trim().length < 6}
+                          className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[var(--brand-ink)] px-5 text-xs font-semibold text-white transition-colors hover:bg-[var(--brand-ink-hover)] disabled:opacity-50"
+                        >
+                          {reconcileBusy ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                          ) : (
+                            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                          )}
+                          <span>{reconcileBusy ? 'Verifying...' : 'Verify Order'}</span>
+                        </button>
+                      </form>
+                    </div>
+                  </section>
+                )}
               </div>
             )}
           </>
@@ -695,12 +956,16 @@ export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTempl
         isSignedIn={Boolean(user)}
         checkoutBusy={checkoutBusy}
         checkoutError={checkoutError}
+        pendingOrder={pendingOrder}
+        reconcileBusy={reconcileBusy}
+        reconcileMessage={reconcileMessage}
         onClose={() => setCartOpen(false)}
         onUpdateQuantity={(id, qty) => void updateCartQuantity(id, qty)}
         onRemoveItem={(id) => void removeFromCart(id)}
         onClearCart={() => void clearCart()}
         onSignIn={() => void signIn()}
         onCheckout={() => void handleCartCheckout()}
+        onReconcilePendingOrder={() => void handlePendingReconcile()}
       />
 
       {/* Full Paid PDF Reader */}

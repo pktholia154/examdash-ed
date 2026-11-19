@@ -2,11 +2,20 @@
 
 import React, { useEffect } from 'react';
 import Link from 'next/link';
-import { CreditCard, Loader2, Minus, Plus, ShoppingCart, Trash2, X } from 'lucide-react';
+import {
+  CreditCard,
+  Loader2,
+  RefreshCw,
+  ShieldCheck,
+  ShoppingCart,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { MonogramThumbnail } from '@/components/atoms/MonogramThumbnail';
 import { getContentTypeConfig } from '@/lib/design-system/content-types';
 import { formatPrice, type CartTotals } from '@/lib/design-system/formatters';
 import type { CartItem } from '@/lib/design-system/types';
+import type { PendingRazorpayOrder } from '@/core/adapters/platform';
 
 export interface CartDrawerProps {
   readonly open: boolean;
@@ -15,12 +24,16 @@ export interface CartDrawerProps {
   readonly isSignedIn: boolean;
   readonly checkoutBusy?: boolean;
   readonly checkoutError?: string | null;
+  readonly pendingOrder?: PendingRazorpayOrder | null;
+  readonly reconcileBusy?: boolean;
+  readonly reconcileMessage?: string | null;
   readonly onClose: () => void;
-  readonly onUpdateQuantity: (cartItemId: string, quantity: number) => void;
+  readonly onUpdateQuantity?: (cartItemId: string, quantity: number) => void;
   readonly onRemoveItem: (cartItemId: string) => void;
   readonly onClearCart: () => void;
   readonly onSignIn: () => void;
   readonly onCheckout?: () => void;
+  readonly onReconcilePendingOrder?: () => void;
 }
 
 export function CartDrawer({
@@ -30,12 +43,15 @@ export function CartDrawer({
   isSignedIn,
   checkoutBusy = false,
   checkoutError = null,
+  pendingOrder = null,
+  reconcileBusy = false,
+  reconcileMessage = null,
   onClose,
-  onUpdateQuantity,
   onRemoveItem,
   onClearCart,
   onSignIn,
   onCheckout,
+  onReconcilePendingOrder,
 }: CartDrawerProps) {
   useEffect(() => {
     if (!open) return;
@@ -64,7 +80,7 @@ export function CartDrawer({
               Your Study Cart
             </h2>
             <p className="font-mono-tabular text-xs text-[var(--text-muted)]">
-              {totals.itemCount === 1 ? '1 item' : `${totals.itemCount} items`}
+              {items.length === 1 ? '1 digital item' : `${items.length} digital items`}
             </p>
           </div>
           <button
@@ -78,6 +94,48 @@ export function CartDrawer({
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
+          {pendingOrder && isSignedIn && onReconcilePendingOrder && (
+            <div
+              role="status"
+              className="mb-4 space-y-2 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-subtle)] p-3.5"
+            >
+              <p className="text-xs font-semibold text-[var(--text-primary)]">
+                Unverified Razorpay order detected
+              </p>
+              <p className="font-mono-tabular text-xs text-[var(--text-secondary)]">
+                Order {pendingOrder.orderId}
+                {pendingOrder.amountSubunits > 0
+                  ? ` · ${formatPrice(pendingOrder.amountSubunits / 100, pendingOrder.currency)}`
+                  : ''}
+              </p>
+              <p className="text-xs text-[var(--text-muted)]">
+                If payment was debited via UPI or card, verify status to unlock your items immediately.
+              </p>
+              <button
+                type="button"
+                onClick={onReconcilePendingOrder}
+                disabled={reconcileBusy}
+                className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-[var(--brand-ink)] bg-[var(--surface-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] transition-colors hover:bg-[var(--brand-ink)] hover:text-white disabled:opacity-60"
+              >
+                {reconcileBusy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                <span>{reconcileBusy ? 'Checking Razorpay...' : 'Verify Pending Payment'}</span>
+              </button>
+            </div>
+          )}
+
+          {reconcileMessage && (
+            <p
+              role="status"
+              className="mb-4 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-subtle)] px-3 py-2 text-xs text-[var(--text-secondary)]"
+            >
+              {reconcileMessage}
+            </p>
+          )}
+
           {items.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center py-12 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--surface-subtle)] text-[var(--text-muted)]">
@@ -110,45 +168,30 @@ export function CartDrawer({
                         {item.title}
                       </Link>
                       <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-                        {config.singularLabel}
+                        {config.singularLabel} · Single-user digital license
                       </p>
 
                       <div className="mt-3 flex items-center justify-between gap-2">
-                        <div className="inline-flex items-center rounded-lg border border-[var(--border-subtle)]">
-                          <button
-                            type="button"
-                            onClick={() => onUpdateQuantity(item.id, item.quantity - 1)}
-                            aria-label={`Decrease quantity for ${item.title}`}
-                            className="inline-flex h-9 w-9 items-center justify-center text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]"
-                          >
-                            <Minus className="h-3.5 w-3.5" aria-hidden="true" />
-                          </button>
-                          <span className="font-mono-tabular min-w-[2rem] text-center text-xs font-semibold text-[var(--text-primary)]">
-                            {item.quantity}
+                        <div className="flex items-baseline gap-2">
+                          <span className="font-mono-tabular text-sm font-bold text-[var(--text-primary)]">
+                            {formatPrice(item.buyPrice, item.currency)}
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => onUpdateQuantity(item.id, item.quantity + 1)}
-                            aria-label={`Increase quantity for ${item.title}`}
-                            className="inline-flex h-9 w-9 items-center justify-center text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]"
-                          >
-                            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-                          </button>
+                          {item.listPrice > item.buyPrice && (
+                            <span className="font-mono-tabular text-xs text-[var(--text-muted)] line-through">
+                              {formatPrice(item.listPrice, item.currency)}
+                            </span>
+                          )}
                         </div>
 
-                        <div className="flex items-center gap-3">
-                          <span className="font-mono-tabular text-sm font-bold text-[var(--text-primary)]">
-                            {formatPrice(item.buyPrice * item.quantity, item.currency)}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => onRemoveItem(item.id)}
-                            aria-label={`Remove ${item.title} from cart`}
-                            className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--semantic-danger)]"
-                          >
-                            <Trash2 className="h-4 w-4" aria-hidden="true" />
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onRemoveItem(item.id)}
+                          aria-label={`Remove ${item.title} from cart`}
+                          className="inline-flex h-9 items-center gap-1 rounded-lg px-2 text-xs font-medium text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--semantic-danger)]"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Remove</span>
+                        </button>
                       </div>
                     </div>
                   </li>
@@ -234,6 +277,32 @@ export function CartDrawer({
                 </div>
               </div>
             )}
+
+            <div className="flex flex-col items-center gap-1 pt-0.5 text-center text-[11px] text-[var(--text-muted)]">
+              <p className="inline-flex items-center gap-1">
+                <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>Secured by Razorpay · UPI, Cards, Netbanking · Instant Digital Unlock</span>
+              </p>
+              <p>
+                By paying, you agree to our{' '}
+                <Link
+                  href="/terms-of-service"
+                  onClick={onClose}
+                  className="underline underline-offset-2 hover:text-[var(--text-primary)]"
+                >
+                  Terms
+                </Link>{' '}
+                &amp;{' '}
+                <Link
+                  href="/refund-policy"
+                  onClick={onClose}
+                  className="underline underline-offset-2 hover:text-[var(--text-primary)]"
+                >
+                  Refund Policy
+                </Link>
+                .
+              </p>
+            </div>
 
             <button
               type="button"

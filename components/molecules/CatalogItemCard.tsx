@@ -65,8 +65,8 @@ export function CatalogItemCard({
             <button
               type="button"
               onClick={onAddToCart}
-              aria-label={inCart ? `Add another ${title} to cart` : `Add ${title} to cart`}
-              title={inCart ? 'In cart — click to add another' : 'Add to cart'}
+              aria-label={inCart ? `${title} is in cart` : `Add ${title} to cart`}
+              title={inCart ? 'In cart' : 'Add to cart'}
               className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border transition-colors duration-150 ${
                 inCart
                   ? 'border-[var(--brand-ink)] bg-[var(--brand-ink)] text-white hover:bg-[var(--brand-ink-hover)]'
@@ -109,8 +109,8 @@ export function CatalogItemCard({
           <button
             type="button"
             onClick={onAddToCart}
-            aria-label={inCart ? `Add another ${title} to cart` : `Add ${title} to cart`}
-            title={inCart ? 'In cart — click to add another' : 'Add to cart'}
+            aria-label={inCart ? `${title} is in cart` : `Add ${title} to cart`}
+            title={inCart ? 'In cart' : 'Add to cart'}
             className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border transition-colors duration-150 ${
               inCart
                 ? 'border-[var(--brand-ink)] bg-[var(--brand-ink)] text-white hover:bg-[var(--brand-ink-hover)]'

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import {
   collection,
@@ -17,8 +17,13 @@ import {
 import { auth, db, signInWithGoogle, signOutUser, testFirestoreConnection } from '@/lib/firebase/client';
 import { buildFirestoreErrorInfo, OperationType } from '@/lib/firebase/errors';
 import {
+  clearPendingRazorpayOrder,
   razorpayWebCheckoutAdapter,
+  readPendingRazorpayOrder,
+  reconcileRazorpayOrder,
   type CheckoutItemRequest,
+  type PendingRazorpayOrder,
+  type ReconcileOrderResult,
 } from '@/core/adapters/platform';
 import type {
   CartItem,
@@ -80,6 +85,10 @@ interface AppSessionContextValue {
   checkoutError: string | null;
   clearCheckoutError: () => void;
   lastOrderReceipt: OrderReceiptSummary | null;
+  pendingOrder: PendingRazorpayOrder | null;
+  reconcileBusy: boolean;
+  reconcileMessage: string | null;
+  clearReconcileMessage: () => void;
   signIn: () => Promise<SessionUser | null>;
   signInWithReviewerCredentials: (identifier: string, password: string) => Promise<ReviewerSignInResult>;
   signOut: () => Promise<void>;
@@ -92,6 +101,8 @@ interface AppSessionContextValue {
   getPurchase: (contentType: string, itemId: string) => PurchasedItem | null;
   checkoutCart: () => Promise<OrderReceiptSummary | null>;
   buyItemNow: (item: PublicCatalogBaseDTO) => Promise<OrderReceiptSummary | null>;
+  reconcileOrder: (orderId?: string) => Promise<ReconcileOrderResult | null>;
+  dismissPendingOrder: () => void;
   saveReadingProgress: (record: Omit<ReadingProgressRecord, 'id' | 'updatedAt'>) => Promise<void>;
   getReadingProgress: (bookId: string, format: 'pdf' | 'markdown') => ReadingProgressRecord | null;
 }
@@ -227,7 +238,11 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
   const [checkoutBusy, setCheckoutBusy] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [lastOrderReceipt, setLastOrderReceipt] = useState<OrderReceiptSummary | null>(null);
+  const [pendingOrder, setPendingOrder] = useState<PendingRazorpayOrder | null>(null);
+  const [reconcileBusy, setReconcileBusy] = useState(false);
+  const [reconcileMessage, setReconcileMessage] = useState<string | null>(null);
   const [examAttemptSummaries, setExamAttemptSummaries] = useState<ExamAttemptSummary[]>([]);
+  const checkoutInFlightRef = useRef(false);
 
   const authReady = firebaseAuthReady && reviewerHydrated;
 
@@ -371,6 +386,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         setRemoteWritable(false);
         setPurchasedItems([]);
         setPurchasesLoading(false);
+        setPendingOrder(null);
         setCartItems(readLocalCart());
         setReadingProgressMap(readLocalProgressMap('guest'));
       });
@@ -386,6 +402,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       let active = true;
       void Promise.resolve().then(() => {
         if (!active) return;
+        setPendingOrder(readPendingRazorpayOrder(currentUid));
         setPurchasedItems(readLocalPurchases(currentUid));
         setReadingProgressMap(readLocalProgressMap(currentUid));
         setAnalytics({
@@ -411,6 +428,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const userDocRef = doc(db, 'users', activeFirebaseUser.uid);
 
     async function bootstrapUserState() {
+      setPendingOrder(readPendingRazorpayOrder(activeFirebaseUser.uid));
       setPurchasedItems(readLocalPurchases(activeFirebaseUser.uid));
       setReadingProgressMap(readLocalProgressMap(activeFirebaseUser.uid));
       setPurchasesLoading(true);
@@ -780,8 +798,22 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
   const addToCart = useCallback(
     async (item: PublicCatalogBaseDTO) => {
       const cartId = makeItemDocId(item.contentType, item.id);
+
+      // Digital editions are single-license per account: skip if already owned
+      const alreadyOwned = purchasedItems.some(
+        (entry) =>
+          entry.id === cartId ||
+          (entry.contentType === item.contentType && entry.itemId === item.id)
+      );
+      if (alreadyOwned) {
+        return;
+      }
+
       const existingItem = cartItems.find((entry) => entry.id === cartId);
-      const nextQuantity = existingItem ? Math.min(20, existingItem.quantity + 1) : 1;
+      // Digital books & mock exam packs carry a single license (quantity = 1) to prevent duplicate billing
+      if (existingItem) {
+        return;
+      }
 
       const updatedItem: CartItem = {
         id: cartId,
@@ -792,12 +824,10 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         currency: (item.currency || 'INR').slice(0, 8),
         buyPrice: Math.max(0, item.buyPrice),
         listPrice: Math.max(0, item.listPrice),
-        quantity: nextQuantity,
+        quantity: 1,
       };
 
-      const nextList = existingItem
-        ? cartItems.map((entry) => (entry.id === cartId ? updatedItem : entry))
-        : [updatedItem, ...cartItems];
+      const nextList = [updatedItem, ...cartItems];
 
       setCartItems(nextList);
       writeLocalCart(nextList);
@@ -805,19 +835,12 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       if (firebaseUser && remoteWritable) {
         const ref = doc(db, 'users', firebaseUser.uid, 'cart', cartId);
         try {
-          if (existingItem) {
-            await updateDoc(ref, {
-              quantity: nextQuantity,
-              updatedAt: serverTimestamp(),
-            });
-          } else {
-            await setDoc(ref, {
-              ...updatedItem,
-              uid: firebaseUser.uid,
-              addedAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-          }
+          await setDoc(ref, {
+            ...updatedItem,
+            uid: firebaseUser.uid,
+            addedAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
         } catch (err) {
           console.warn(
             'Firestore cart write fallback to local:',
@@ -833,7 +856,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         }
       }
     },
-    [cartItems, firebaseUser, remoteWritable]
+    [cartItems, firebaseUser, purchasedItems, remoteWritable]
   );
 
   const removeFromCart = useCallback(
@@ -944,18 +967,59 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       setPurchasedItems(merged);
       writeLocalPurchases(activeUser.uid, merged);
 
-      // Only write to Firestore subcollection for Firebase-authenticated users
-      if (activeUser.authProvider !== 'firebase-google' || !firebaseUser) {
+      // Use live auth.currentUser rather than stale React closure state so inline sign-in during
+      // checkout immediately persists verified purchases to Firestore as well as local storage.
+      const liveFbUser = auth.currentUser;
+      if (activeUser.authProvider !== 'firebase-google' || !liveFbUser || liveFbUser.uid !== activeUser.uid) {
         return;
+      }
+
+      // Ensure parent /users/{uid} document exists before writing /purchases/{id}
+      // so Firestore security rule `exists(/databases/$(database)/documents/users/$(userId))` passes.
+      const userDocRef = doc(db, 'users', liveFbUser.uid);
+      try {
+        const userSnap = await getDoc(userDocRef);
+        if (!userSnap.exists()) {
+          await setDoc(userDocRef, {
+            uid: liveFbUser.uid,
+            displayName: (liveFbUser.displayName || '').slice(0, 120),
+            email: (liveFbUser.email || '').slice(0, 254),
+            photoURL: (liveFbUser.photoURL || '').slice(0, 1000),
+            testsAttempted: 0,
+            booksOwned: 0,
+            examsOwned: 0,
+            averageAccuracy: 0,
+            studyStreakDays: 0,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (profileErr) {
+        console.warn(
+          'Firestore user parent ensure skipped:',
+          JSON.stringify(
+            buildFirestoreErrorInfo(
+              profileErr,
+              OperationType.WRITE,
+              `users/${liveFbUser.uid}`,
+              liveFbUser
+            )
+          )
+        );
       }
 
       await Promise.allSettled(
         newPurchases.map(async (p) => {
-          const ref = doc(db, 'users', firebaseUser.uid, 'purchases', p.id);
+          const ref = doc(db, 'users', liveFbUser.uid, 'purchases', p.id);
           try {
+            // Skip overwriting terminal immutable purchase records that already exist
+            const existingSnap = await getDoc(ref);
+            if (existingSnap.exists()) {
+              return;
+            }
             await setDoc(ref, {
               id: p.id,
-              uid: firebaseUser.uid,
+              uid: liveFbUser.uid,
               itemId: p.itemId,
               contentType: p.contentType,
               title: p.title.slice(0, 240),
@@ -975,8 +1039,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
                 buildFirestoreErrorInfo(
                   err,
                   OperationType.CREATE,
-                  `users/${firebaseUser.uid}/purchases/${p.id}`,
-                  firebaseUser
+                  `users/${liveFbUser.uid}/purchases/${p.id}`,
+                  liveFbUser
                 )
               )
             );
@@ -984,22 +1048,35 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         })
       );
     },
-    [firebaseUser]
+    []
   );
 
   const runRazorpayCheckout = useCallback(
     async (itemsToBuy: readonly CheckoutItemRequest[], clearAfter: boolean): Promise<OrderReceiptSummary | null> => {
+      if (checkoutInFlightRef.current) return null;
       setCheckoutError(null);
+      setReconcileMessage(null);
+
       let activeUser = user;
       if (!activeUser) {
         activeUser = await signIn();
         if (!activeUser) return null;
       }
 
+      // Filter out any digital items already owned by this account
+      const unownedItems = itemsToBuy.filter(
+        (item) => !isPurchased(item.contentType, item.itemId)
+      );
+      if (unownedItems.length === 0) {
+        setCheckoutError('All selected items are already unlocked in your Purchased Library.');
+        return null;
+      }
+
+      checkoutInFlightRef.current = true;
       setCheckoutBusy(true);
       try {
         const result = await razorpayWebCheckoutAdapter.checkout({
-          items: itemsToBuy,
+          items: unownedItems,
           user: {
             uid: activeUser.uid,
             email: activeUser.email,
@@ -1007,6 +1084,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
             getIdToken: () => activeUser!.getIdToken(),
           },
         });
+
+        setPendingOrder(readPendingRazorpayOrder(activeUser.uid));
 
         if (result.status === 'cancelled' || !result.purchases || result.purchases.length === 0) {
           return null;
@@ -1033,18 +1112,23 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
           completedAt: new Date().toISOString(),
         };
         setLastOrderReceipt(receipt);
+        setPendingOrder(null);
         setCartOpen(false);
         return receipt;
       } catch (err) {
+        if (activeUser) {
+          setPendingOrder(readPendingRazorpayOrder(activeUser.uid));
+        }
         setCheckoutError(
           err instanceof Error ? err.message : 'Unable to complete Razorpay checkout.'
         );
         return null;
       } finally {
+        checkoutInFlightRef.current = false;
         setCheckoutBusy(false);
       }
     },
-    [cartItems, clearCart, persistVerifiedPurchases, removeFromCart, signIn, user]
+    [cartItems, clearCart, isPurchased, persistVerifiedPurchases, removeFromCart, signIn, user]
   );
 
   const checkoutCart = useCallback(async () => {
@@ -1052,7 +1136,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const reqItems: CheckoutItemRequest[] = cartItems.map((c) => ({
       itemId: c.itemId,
       contentType: c.contentType,
-      quantity: c.quantity,
+      quantity: 1,
       title: c.title,
     }));
     return runRazorpayCheckout(reqItems, true);
@@ -1060,6 +1144,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
 
   const buyItemNow = useCallback(
     async (item: PublicCatalogBaseDTO) => {
+      if (isPurchased(item.contentType, item.id)) return null;
       return runRazorpayCheckout(
         [
           {
@@ -1072,8 +1157,72 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         false
       );
     },
-    [runRazorpayCheckout]
+    [isPurchased, runRazorpayCheckout]
   );
+
+  const reconcileOrder = useCallback(
+    async (explicitOrderId?: string): Promise<ReconcileOrderResult | null> => {
+      const targetOrderId = (explicitOrderId ?? pendingOrder?.orderId ?? '').trim();
+      if (!targetOrderId || !user) return null;
+
+      setReconcileBusy(true);
+      setReconcileMessage(null);
+      setCheckoutError(null);
+      try {
+        const orderToken =
+          pendingOrder && pendingOrder.orderId === targetOrderId
+            ? pendingOrder.orderToken
+            : undefined;
+
+        const result = await reconcileRazorpayOrder({
+          orderId: targetOrderId,
+          orderToken,
+          getIdToken: () => user.getIdToken(),
+        });
+
+        setPendingOrder(readPendingRazorpayOrder(user.uid));
+
+        if (result.status === 'completed' && result.purchases && result.purchases.length > 0) {
+          await persistVerifiedPurchases(user, result.purchases);
+          const boughtIds = new Set(result.purchases.map((p) => p.id));
+          for (const id of boughtIds) {
+            if (cartItems.some((c) => c.id === id)) {
+              await removeFromCart(id);
+            }
+          }
+          setLastOrderReceipt({
+            orderId: result.orderId,
+            paymentId: result.paymentId ?? '',
+            itemCount: result.purchases.length,
+            completedAt: new Date().toISOString(),
+          });
+          setReconcileMessage(
+            `Order ${result.orderId} verified and unlocked (${result.purchases.length} item${result.purchases.length === 1 ? '' : 's'}).`
+          );
+          return result;
+        }
+
+        setReconcileMessage(
+          result.message || `Order ${result.orderId} is currently ${result.status}.`
+        );
+        return result;
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : 'Unable to verify Razorpay order right now.';
+        setReconcileMessage(msg);
+        return null;
+      } finally {
+        setReconcileBusy(false);
+      }
+    },
+    [cartItems, pendingOrder, persistVerifiedPurchases, removeFromCart, user]
+  );
+
+  const dismissPendingOrder = useCallback(() => {
+    clearPendingRazorpayOrder();
+    setPendingOrder(null);
+    setReconcileMessage(null);
+  }, []);
 
   const saveReadingProgress = useCallback(
     async (input: Omit<ReadingProgressRecord, 'id' | 'updatedAt'>) => {
@@ -1141,6 +1290,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
   );
 
   const clearCheckoutError = useCallback(() => setCheckoutError(null), []);
+  const clearReconcileMessage = useCallback(() => setReconcileMessage(null), []);
   const cartTotals = useMemo(() => computeCartTotals(cartItems), [cartItems]);
 
   const value = useMemo<AppSessionContextValue>(
@@ -1161,6 +1311,10 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       checkoutError,
       clearCheckoutError,
       lastOrderReceipt,
+      pendingOrder,
+      reconcileBusy,
+      reconcileMessage,
+      clearReconcileMessage,
       signIn,
       signInWithReviewerCredentials,
       signOut,
@@ -1173,6 +1327,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       getPurchase,
       checkoutCart,
       buyItemNow,
+      reconcileOrder,
+      dismissPendingOrder,
       saveReadingProgress,
       getReadingProgress,
     }),
@@ -1192,6 +1348,10 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       checkoutError,
       clearCheckoutError,
       lastOrderReceipt,
+      pendingOrder,
+      reconcileBusy,
+      reconcileMessage,
+      clearReconcileMessage,
       signIn,
       signInWithReviewerCredentials,
       signOut,
@@ -1204,6 +1364,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       getPurchase,
       checkoutCart,
       buyItemNow,
+      reconcileOrder,
+      dismissPendingOrder,
       saveReadingProgress,
       getReadingProgress,
     ]

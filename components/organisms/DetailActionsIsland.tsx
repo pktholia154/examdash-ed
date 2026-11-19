@@ -64,6 +64,7 @@ export function DetailActionsIsland({
     user,
     checkoutBusy,
     checkoutError,
+    setCartOpen,
     addToCart,
     isInCart,
     getPurchase,
@@ -288,13 +289,19 @@ export function DetailActionsIsland({
 
             <button
               type="button"
-              onClick={() => void addToCart(cartItemPayload)}
+              onClick={() => {
+                if (added) {
+                  setCartOpen(true);
+                } else {
+                  void addToCart(cartItemPayload);
+                }
+              }}
               className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-[var(--brand-ink)] bg-[var(--surface-canvas)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] whitespace-nowrap transition-colors hover:bg-[var(--brand-ink)] hover:text-white"
             >
               {added ? (
                 <>
                   <Check className="h-4 w-4" aria-hidden="true" />
-                  <span>Add another to cart</span>
+                  <span>In cart · Checkout</span>
                 </>
               ) : (
                 <>

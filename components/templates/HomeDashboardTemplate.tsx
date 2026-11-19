@@ -55,6 +55,9 @@ export function HomeDashboardTemplate({
     purchasedItems,
     checkoutBusy,
     checkoutError,
+    pendingOrder,
+    reconcileBusy,
+    reconcileMessage,
     signIn,
     signOut,
     addToCart,
@@ -63,12 +66,21 @@ export function HomeDashboardTemplate({
     clearCart,
     isInCart,
     checkoutCart,
+    reconcileOrder,
   } = useAppSession();
 
   const handleCartCheckout = async () => {
     const receipt = await checkoutCart();
     if (receipt) {
       router.push(`/purchased?order=${encodeURIComponent(receipt.orderId)}`);
+    }
+  };
+
+  const handleReconcile = async () => {
+    const res = await reconcileOrder();
+    if (res?.status === 'completed') {
+      setCartOpen(false);
+      router.push(`/purchased?order=${encodeURIComponent(res.orderId)}`);
     }
   };
 
@@ -214,12 +226,16 @@ export function HomeDashboardTemplate({
         isSignedIn={Boolean(user)}
         checkoutBusy={checkoutBusy}
         checkoutError={checkoutError}
+        pendingOrder={pendingOrder}
+        reconcileBusy={reconcileBusy}
+        reconcileMessage={reconcileMessage}
         onClose={() => setCartOpen(false)}
         onUpdateQuantity={(id, qty) => void updateCartQuantity(id, qty)}
         onRemoveItem={(id) => void removeFromCart(id)}
         onClearCart={() => void clearCart()}
         onSignIn={() => void signIn()}
         onCheckout={() => void handleCartCheckout()}
+        onReconcilePendingOrder={() => void handleReconcile()}
       />
     </div>
   );

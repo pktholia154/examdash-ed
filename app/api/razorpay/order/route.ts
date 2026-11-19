@@ -1,9 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
+  assertSingleOrderCurrency,
   CreateOrderRequestSchema,
+  encodeOrderItemsManifest,
+  getRazorpayServerConfig,
+  normalizeCheckoutItems,
+  signOrderBindingToken,
+  signOrderManifest,
   sumOrderSubunits,
+  toSubunits,
+  type OrderBindingLine,
   type ResolvedOrderItem,
 } from '@/core/payments/razorpay';
+import { createRazorpayOrder } from '@/core/payments/razorpay-api';
+import { packManifestIntoNotes } from '@/core/payments/fulfillment';
 import { extractBearerToken, verifyFirebaseIdToken } from '@/lib/firebase/server-auth';
 import { fetchPublishedBooks, fetchPublishedExams } from '@/lib/firebase/server-catalog';
 
@@ -11,20 +21,18 @@ export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
   try {
-    const keyId = process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID?.trim();
-    const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
-
-    if (!keyId || !keySecret) {
+    const config = getRazorpayServerConfig();
+    if (!config) {
       return NextResponse.json(
         { error: 'Razorpay payment gateway is not configured on the server.' },
-        { status: 500 }
+        { status: 503 }
       );
     }
 
     const token = extractBearerToken(req);
     if (!token) {
       return NextResponse.json(
-        { error: 'Please sign in with Google before proceeding to checkout.' },
+        { error: 'Please sign in before proceeding to checkout.' },
         { status: 401 }
       );
     }
@@ -32,7 +40,7 @@ export async function POST(req: NextRequest) {
     const verifiedUser = await verifyFirebaseIdToken(token);
     if (!verifiedUser) {
       return NextResponse.json(
-        { error: 'Invalid or expired Google session. Please sign in again.' },
+        { error: 'Invalid or expired session. Please sign in again.' },
         { status: 401 }
       );
     }
@@ -46,12 +54,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Deduplicate digital items and enforce single-license quantity = 1
+    const normalizedItems = normalizeCheckoutItems(parsed.data.items);
+
     const [books, exams] = await Promise.all([fetchPublishedBooks(), fetchPublishedExams()]);
     const bookMap = new Map(books.map((b) => [b.id, b]));
     const examMap = new Map(exams.map((e) => [e.id, e]));
 
     const resolvedItems: ResolvedOrderItem[] = [];
-    for (const line of parsed.data.items) {
+    for (const line of normalizedItems) {
       if (line.contentType === 'books') {
         const book = bookMap.get(line.itemId);
         if (!book) {
@@ -65,10 +76,10 @@ export async function POST(req: NextRequest) {
           contentType: 'books',
           title: book.title,
           urlSlug: book.urlSlug,
-          currency: book.currency || 'INR',
+          currency: (book.currency || 'INR').trim().toUpperCase(),
           unitPrice: book.buyPrice,
-          quantity: line.quantity,
-          lineTotal: book.buyPrice * line.quantity,
+          quantity: 1,
+          lineTotal: book.buyPrice,
         });
       } else if (line.contentType === 'exams') {
         const exam = examMap.get(line.itemId);
@@ -83,16 +94,29 @@ export async function POST(req: NextRequest) {
           contentType: 'exams',
           title: exam.title,
           urlSlug: exam.urlSlug,
-          currency: exam.currency || 'INR',
+          currency: (exam.currency || 'INR').trim().toUpperCase(),
           unitPrice: exam.buyPrice,
-          quantity: line.quantity,
-          lineTotal: exam.buyPrice * line.quantity,
+          quantity: 1,
+          lineTotal: exam.buyPrice,
         });
       }
     }
 
     if (resolvedItems.length === 0) {
-      return NextResponse.json({ error: 'No valid catalog items found for checkout.' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'No valid catalog items found for checkout.' },
+        { status: 400 }
+      );
+    }
+
+    let currency: string;
+    try {
+      currency = assertSingleOrderCurrency(resolvedItems);
+    } catch (currencyErr) {
+      return NextResponse.json(
+        { error: currencyErr instanceof Error ? currencyErr.message : 'Currency mismatch.' },
+        { status: 400 }
+      );
     }
 
     const amountSubunits = sumOrderSubunits(resolvedItems);
@@ -103,54 +127,78 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const currency = resolvedItems[0].currency || 'INR';
     const receipt = `ed_${verifiedUser.uid.slice(0, 8)}_${Date.now()}`.slice(0, 40);
-    const basicAuth = Buffer.from(`${keyId}:${keySecret}`, 'utf8').toString('base64');
-
-    const rzpRes = await fetch('https://api.razorpay.com/v1/orders', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Basic ${basicAuth}`,
-      },
-      body: JSON.stringify({
-        amount: amountSubunits,
+    const manifest = encodeOrderItemsManifest(resolvedItems);
+    const manifestSig = signOrderManifest(
+      {
+        uid: verifiedUser.uid,
         currency,
-        receipt,
-        notes: {
-          uid: verifiedUser.uid,
-          email: verifiedUser.email ?? '',
-          itemIds: resolvedItems.map((i) => `${i.contentType}:${i.itemId}`).join(',').slice(0, 240),
-        },
-      }),
-      cache: 'no-store',
+        amountSubunits,
+        manifest,
+      },
+      config.keySecret
+    );
+
+    const packedManifestNotes = packManifestIntoNotes(manifest);
+    const orderRes = await createRazorpayOrder(config, {
+      amount: amountSubunits,
+      currency,
+      receipt,
+      notes: {
+        uid: verifiedUser.uid,
+        email: (verifiedUser.email ?? '').slice(0, 240),
+        platform: 'exam-dash.com',
+        expected_subunits: String(amountSubunits),
+        manifest_sig: manifestSig,
+        ...packedManifestNotes,
+      },
     });
 
-    const rzpOrder = (await rzpRes.json().catch(() => ({}))) as {
-      id?: string;
-      amount?: number;
-      currency?: string;
-      error?: { description?: string };
-    };
-
-    if (!rzpRes.ok || !rzpOrder.id) {
+    if (!orderRes.ok || !orderRes.data.id) {
       return NextResponse.json(
         {
-          error:
-            rzpOrder.error?.description ||
-            `Razorpay order creation failed (HTTP ${rzpRes.status}).`,
+          error: !orderRes.ok ? orderRes.error : 'Razorpay order creation failed.',
         },
-        { status: 502 }
+        { status: !orderRes.ok && orderRes.status === 504 ? 504 : 502 }
       );
     }
 
-    return NextResponse.json({
-      orderId: rzpOrder.id,
-      amount: rzpOrder.amount ?? amountSubunits,
-      currency: rzpOrder.currency ?? currency,
-      keyId,
-      items: resolvedItems,
-    });
+    const rzpOrder = orderRes.data;
+    const bindingLines: OrderBindingLine[] = resolvedItems.map((item) => ({
+      itemId: item.itemId,
+      contentType: item.contentType,
+      quantity: item.quantity,
+      unitPriceSubunits: toSubunits(item.unitPrice),
+    }));
+
+    const orderToken = signOrderBindingToken(
+      {
+        orderId: rzpOrder.id,
+        uid: verifiedUser.uid,
+        currency: rzpOrder.currency || currency,
+        amountSubunits: rzpOrder.amount ?? amountSubunits,
+        items: bindingLines,
+      },
+      config.keySecret
+    );
+
+    return NextResponse.json(
+      {
+        orderId: rzpOrder.id,
+        amount: rzpOrder.amount ?? amountSubunits,
+        currency: rzpOrder.currency ?? currency,
+        receipt,
+        keyId: config.keyId,
+        mode: config.mode,
+        orderToken,
+        items: resolvedItems,
+      },
+      {
+        headers: {
+          'Cache-Control': 'private, no-store, max-age=0',
+        },
+      }
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Unable to create Razorpay order.' },

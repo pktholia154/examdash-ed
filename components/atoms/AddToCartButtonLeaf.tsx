@@ -28,10 +28,16 @@ export function AddToCartButtonLeaf({
   buyPrice,
   listPrice,
 }: AddToCartButtonLeafProps) {
-  const { isInCart, addToCart } = useAppSession();
+  const { isInCart, isPurchased, addToCart, setCartOpen } = useAppSession();
   const inCart = isInCart(contentType, id);
+  const owned = isPurchased(contentType, id);
 
-  const handleAdd = () => {
+  const handleClick = () => {
+    if (owned) return;
+    if (inCart) {
+      setCartOpen(true);
+      return;
+    }
     void addToCart({
       id,
       contentType,
@@ -56,17 +62,26 @@ export function AddToCartButtonLeaf({
   return (
     <button
       type="button"
-      onClick={handleAdd}
+      onClick={handleClick}
+      disabled={owned}
       data-nosnippet=""
-      aria-label={inCart ? `Add another ${title} to cart` : `Add ${title} to cart`}
-      title={inCart ? 'In cart — click to add another' : 'Add to cart'}
+      aria-label={
+        owned
+          ? `${title} is already purchased`
+          : inCart
+            ? `${title} is in cart — open cart`
+            : `Add ${title} to cart`
+      }
+      title={owned ? 'Purchased' : inCart ? 'In cart — open checkout' : 'Add to cart'}
       className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border transition-colors duration-150 ${
-        inCart
-          ? 'border-[var(--brand-ink)] bg-[var(--brand-ink)] text-white hover:bg-[var(--brand-ink-hover)]'
-          : 'border-[var(--border-strong)] bg-[var(--surface-canvas)] text-[var(--text-primary)] hover:border-[var(--brand-ink)] hover:bg-[var(--surface-hover)]'
+        owned
+          ? 'border-[var(--border-subtle)] bg-[var(--surface-subtle)] text-[var(--semantic-discount)] cursor-default'
+          : inCart
+            ? 'border-[var(--brand-ink)] bg-[var(--brand-ink)] text-white hover:bg-[var(--brand-ink-hover)]'
+            : 'border-[var(--border-strong)] bg-[var(--surface-canvas)] text-[var(--text-primary)] hover:border-[var(--brand-ink)] hover:bg-[var(--surface-hover)]'
       }`}
     >
-      {inCart ? (
+      {owned || inCart ? (
         <Check className="h-4 w-4" aria-hidden="true" />
       ) : (
         <ShoppingCart className="h-4 w-4" aria-hidden="true" />

@@ -14,11 +14,94 @@ export const CreateOrderRequestSchema = z.object({
 });
 
 export const VerifyPaymentRequestSchema = z.object({
-  razorpay_order_id: z.string().min(4).max(128),
-  razorpay_payment_id: z.string().min(4).max(128),
-  razorpay_signature: z.string().min(16).max(256),
-  items: z.array(CheckoutLineItemSchema).min(1).max(25),
+  razorpay_order_id: z
+    .string()
+    .trim()
+    .min(4)
+    .max(128)
+    .regex(/^order_[a-zA-Z0-9]+$/, 'Invalid Razorpay order ID format.'),
+  razorpay_payment_id: z
+    .string()
+    .trim()
+    .min(4)
+    .max(128)
+    .regex(/^pay_[a-zA-Z0-9]+$/, 'Invalid Razorpay payment ID format.'),
+  razorpay_signature: z.string().trim().min(16).max(256),
+  orderToken: z.string().trim().min(16).max(4096).optional(),
+  items: z.array(CheckoutLineItemSchema).min(1).max(25).optional(),
 });
+
+export const ReconcileOrderRequestSchema = z.object({
+  razorpay_order_id: z
+    .string()
+    .trim()
+    .min(4)
+    .max(128)
+    .regex(/^order_[a-zA-Z0-9]+$/, 'Invalid Razorpay order ID format.'),
+  orderToken: z.string().trim().min(16).max(4096).optional(),
+});
+
+export const RazorpayWebhookPayloadSchema = z.object({
+  entity: z.literal('event').optional(),
+  account_id: z.string().max(128).optional(),
+  event: z.string().min(3).max(128),
+  contains: z.array(z.string()).optional(),
+  created_at: z.number().int().optional(),
+  payload: z.object({
+    payment: z
+      .object({
+        entity: z.object({
+          id: z.string().min(4).max(128),
+          order_id: z.string().max(128).nullable().optional(),
+          amount: z.number().int().nonnegative(),
+          currency: z.string().min(3).max(8),
+          status: z.string().min(1).max(64),
+          method: z.string().max(64).nullable().optional(),
+          captured: z.boolean().optional(),
+          email: z.string().max(254).nullable().optional(),
+          contact: z.string().max(64).nullable().optional(),
+          error_code: z.string().max(128).nullable().optional(),
+          error_description: z.string().max(500).nullable().optional(),
+          notes: z.record(z.string(), z.unknown()).optional(),
+        }),
+      })
+      .optional(),
+    order: z
+      .object({
+        entity: z.object({
+          id: z.string().min(4).max(128),
+          amount: z.number().int().nonnegative(),
+          amount_paid: z.number().int().nonnegative().optional(),
+          amount_due: z.number().int().nonnegative().optional(),
+          currency: z.string().min(3).max(8),
+          receipt: z.string().max(128).nullable().optional(),
+          status: z.string().min(1).max(64),
+          notes: z.record(z.string(), z.unknown()).optional(),
+        }),
+      })
+      .optional(),
+    refund: z
+      .object({
+        entity: z.object({
+          id: z.string().min(4).max(128),
+          payment_id: z.string().min(4).max(128),
+          amount: z.number().int().nonnegative(),
+          currency: z.string().min(3).max(8),
+          status: z.string().min(1).max(64),
+        }),
+      })
+      .optional(),
+  }),
+});
+
+export type RazorpayWebhookPayload = z.infer<typeof RazorpayWebhookPayloadSchema>;
+
+export interface RazorpayServerConfig {
+  readonly keyId: string;
+  readonly keySecret: string;
+  readonly webhookSecret: string | null;
+  readonly mode: 'test' | 'live' | 'unknown';
+}
 
 export interface ResolvedOrderItem {
   readonly itemId: string;
@@ -31,6 +114,23 @@ export interface ResolvedOrderItem {
   readonly lineTotal: number;
 }
 
+export interface OrderBindingLine {
+  readonly itemId: string;
+  readonly contentType: 'books' | 'exams' | 'quizbooks';
+  readonly quantity: number;
+  readonly unitPriceSubunits: number;
+}
+
+export interface OrderBindingTokenPayload {
+  readonly orderId: string;
+  readonly uid: string;
+  readonly currency: string;
+  readonly amountSubunits: number;
+  readonly items: readonly OrderBindingLine[];
+  readonly issuedAt: number;
+  readonly expiresAt: number;
+}
+
 export interface EntitlementPayload {
   readonly uid: string;
   readonly itemId: string;
@@ -38,6 +138,81 @@ export interface EntitlementPayload {
   readonly orderId: string;
   readonly paymentId: string;
   readonly issuedAt: number;
+}
+
+const ORDER_BINDING_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+/**
+ * Resolves server-side Razorpay configuration from environment variables.
+ * Supports both `RAZORPAY_KEY_ID` (standard Razorpay SDK naming) and `NEXT_PUBLIC_RAZORPAY_KEY_ID`.
+ */
+export function getRazorpayServerConfig(): RazorpayServerConfig | null {
+  const keyId = (
+    process.env.RAZORPAY_KEY_ID?.trim() ||
+    process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID?.trim() ||
+    ''
+  );
+  const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim() || '';
+  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim() || null;
+
+  if (!keyId || !keySecret) {
+    return null;
+  }
+
+  const mode: RazorpayServerConfig['mode'] = keyId.startsWith('rzp_test_')
+    ? 'test'
+    : keyId.startsWith('rzp_live_')
+      ? 'live'
+      : 'unknown';
+
+  return {
+    keyId,
+    keySecret,
+    webhookSecret,
+    mode,
+  };
+}
+
+/**
+ * Deduplicates checkout line items by `(contentType, itemId)` and enforces
+ * single-license quantity (`1`) for digital goods so learners can never be
+ * accidentally double-billed for the same eBook or online exam pack.
+ */
+export function normalizeCheckoutItems(
+  items: readonly CheckoutLineItemInput[]
+): CheckoutLineItemInput[] {
+  const seen = new Set<string>();
+  const normalized: CheckoutLineItemInput[] = [];
+  for (const item of items) {
+    const key = `${item.contentType}:${item.itemId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push({
+      itemId: item.itemId,
+      contentType: item.contentType,
+      quantity: 1,
+    });
+  }
+  return normalized;
+}
+
+/**
+ * Ensures every item in an order uses the same uppercase ISO currency code.
+ */
+export function assertSingleOrderCurrency(items: readonly ResolvedOrderItem[]): string {
+  if (items.length === 0) {
+    throw new Error('Order must contain at least one item.');
+  }
+  const currency = (items[0].currency || 'INR').trim().toUpperCase();
+  for (const item of items) {
+    const itemCurrency = (item.currency || 'INR').trim().toUpperCase();
+    if (itemCurrency !== currency) {
+      throw new Error(
+        `Mixed currencies (${currency} and ${itemCurrency}) cannot be combined in a single Razorpay order.`
+      );
+    }
+  }
+  return currency;
 }
 
 /**
@@ -83,6 +258,200 @@ export function verifyRazorpaySignature(
     return false;
   }
   return crypto.timingSafeEqual(expectedBuf, providedBuf);
+}
+
+/**
+ * Computes Razorpay Webhook HMAC-SHA256 signature over the exact raw request body.
+ */
+export function computeRazorpayWebhookSignature(
+  rawBody: string,
+  webhookSecret: string
+): string {
+  return crypto
+    .createHmac('sha256', webhookSecret)
+    .update(rawBody, 'utf8')
+    .digest('hex');
+}
+
+/**
+ * Timing-safe verification of `X-Razorpay-Signature` header for webhook deliveries.
+ */
+export function verifyRazorpayWebhookSignature(
+  rawBody: string,
+  providedSignature: string,
+  webhookSecret: string
+): boolean {
+  if (!rawBody || !providedSignature || !webhookSecret) {
+    return false;
+  }
+  const expectedHex = computeRazorpayWebhookSignature(rawBody, webhookSecret);
+  const expectedBuf = Buffer.from(expectedHex, 'utf8');
+  const providedBuf = Buffer.from(providedSignature.trim(), 'utf8');
+  if (expectedBuf.length !== providedBuf.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(expectedBuf, providedBuf);
+}
+
+/**
+ * Encodes ordered items into a compact, canonical string suitable for Razorpay Order `notes`.
+ * Format: `books:B1,exams:E1` (sorted deterministically).
+ */
+export function encodeOrderItemsManifest(
+  items: readonly Pick<CheckoutLineItemInput, 'contentType' | 'itemId'>[]
+): string {
+  return Array.from(
+    new Set(items.map((item) => `${item.contentType}:${item.itemId}`))
+  )
+    .sort()
+    .join(',');
+}
+
+/**
+ * Parses a canonical manifest string (`books:B1,exams:E1`) back into validated checkout line items.
+ */
+export function parseOrderItemsManifest(manifest: string): CheckoutLineItemInput[] {
+  if (!manifest || typeof manifest !== 'string') return [];
+  const parsed: CheckoutLineItemInput[] = [];
+  for (const part of manifest.split(',')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const colonIdx = trimmed.indexOf(':');
+    if (colonIdx <= 0) continue;
+    const contentType = trimmed.slice(0, colonIdx);
+    const itemId = trimmed.slice(colonIdx + 1);
+    const check = CheckoutLineItemSchema.safeParse({
+      contentType,
+      itemId,
+      quantity: 1,
+    });
+    if (check.success) {
+      parsed.push(check.data);
+    }
+  }
+  return normalizeCheckoutItems(parsed);
+}
+
+/**
+ * Computes a tamper-proof HMAC signature over `(uid, currency, amountSubunits, manifest)`
+ * stored in Razorpay Order `notes.manifest_sig` so even stateless webhook/reconciliation
+ * lookups can cryptographically prove which exact items & user an order was created for.
+ */
+export function signOrderManifest(
+  params: {
+    readonly uid: string;
+    readonly currency: string;
+    readonly amountSubunits: number;
+    readonly manifest: string;
+  },
+  keySecret: string
+): string {
+  const canonical = `ed_manifest_v1|${params.uid}|${params.currency.toUpperCase()}|${params.amountSubunits}|${params.manifest}`;
+  return crypto.createHmac('sha256', keySecret).update(canonical, 'utf8').digest('hex');
+}
+
+export function verifyOrderManifest(
+  params: {
+    readonly uid: string;
+    readonly currency: string;
+    readonly amountSubunits: number;
+    readonly manifest: string;
+    readonly signature: string;
+  },
+  keySecret: string
+): boolean {
+  if (!params.uid || !params.currency || !params.manifest || !params.signature || !keySecret) {
+    return false;
+  }
+  const expected = signOrderManifest(params, keySecret);
+  const expectedBuf = Buffer.from(expected, 'utf8');
+  const providedBuf = Buffer.from(params.signature.trim(), 'utf8');
+  if (expectedBuf.length !== providedBuf.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(expectedBuf, providedBuf);
+}
+
+/**
+ * Mints a short-lived server-signed token binding a Razorpay `order_id` to the exact
+ * user UID, resolved line items, locked unit prices, currency, and total subunits.
+ */
+export function signOrderBindingToken(
+  payload: Omit<OrderBindingTokenPayload, 'issuedAt' | 'expiresAt'> & {
+    issuedAt?: number;
+    expiresAt?: number;
+  },
+  keySecret: string
+): string {
+  const issuedAt = payload.issuedAt ?? Date.now();
+  const fullPayload: OrderBindingTokenPayload = {
+    orderId: payload.orderId,
+    uid: payload.uid,
+    currency: payload.currency.toUpperCase(),
+    amountSubunits: payload.amountSubunits,
+    items: payload.items,
+    issuedAt,
+    expiresAt: payload.expiresAt ?? issuedAt + ORDER_BINDING_TTL_MS,
+  };
+  const encoded = Buffer.from(JSON.stringify(fullPayload), 'utf8').toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', keySecret)
+    .update(`ed_order_v1.${encoded}`)
+    .digest('base64url');
+  return `ed_order_v1.${encoded}.${sig}`;
+}
+
+export function verifyOrderBindingToken(
+  token: string,
+  expected: { readonly orderId: string; readonly uid: string },
+  keySecret: string,
+  nowMs: number = Date.now()
+): { readonly valid: boolean; readonly payload: OrderBindingTokenPayload | null } {
+  if (!token || !keySecret) {
+    return { valid: false, payload: null };
+  }
+  const parts = token.trim().split('.');
+  if (parts.length !== 3 || parts[0] !== 'ed_order_v1') {
+    return { valid: false, payload: null };
+  }
+  const [, encoded, providedSig] = parts;
+  if (!encoded || !providedSig) {
+    return { valid: false, payload: null };
+  }
+
+  const expectedSig = crypto
+    .createHmac('sha256', keySecret)
+    .update(`ed_order_v1.${encoded}`)
+    .digest('base64url');
+
+  const expectedBuf = Buffer.from(expectedSig, 'utf8');
+  const providedBuf = Buffer.from(providedSig, 'utf8');
+  if (expectedBuf.length !== providedBuf.length || !crypto.timingSafeEqual(expectedBuf, providedBuf)) {
+    return { valid: false, payload: null };
+  }
+
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(encoded, 'base64url').toString('utf8')
+    ) as Partial<OrderBindingTokenPayload>;
+
+    if (
+      parsed.orderId !== expected.orderId ||
+      parsed.uid !== expected.uid ||
+      typeof parsed.currency !== 'string' ||
+      typeof parsed.amountSubunits !== 'number' ||
+      !Array.isArray(parsed.items) ||
+      parsed.items.length === 0 ||
+      typeof parsed.expiresAt !== 'number' ||
+      nowMs > parsed.expiresAt
+    ) {
+      return { valid: false, payload: null };
+    }
+
+    return { valid: true, payload: parsed as OrderBindingTokenPayload };
+  } catch {
+    return { valid: false, payload: null };
+  }
 }
 
 /**
