@@ -66,7 +66,9 @@ export async function GET(
       }
 
       targetUrl = resolveFirebaseStorageUrl(bookPaths.fullMarkdownStoragePath);
-      upstreamHeaders.Authorization = `Firebase ${token}`;
+      if (!verifiedUser.isReviewerSession) {
+        upstreamHeaders.Authorization = `Firebase ${token}`;
+      }
     }
 
     const controller = new AbortController();

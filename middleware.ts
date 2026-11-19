@@ -39,6 +39,8 @@ function isPrivateOrNonIndexablePath(pathname: string): boolean {
     pathname.startsWith('/admin') ||
     pathname.startsWith('/account') ||
     pathname.startsWith('/checkout') ||
+    pathname.startsWith('/login') ||
+    pathname.startsWith('/signin') ||
     pathname.startsWith('/search') ||
     /^\/exams\/[^/]+\/attempt(\/|$)/.test(pathname)
   );

@@ -7,6 +7,8 @@ const DISALLOWED_PATHS = [
   '/admin',
   '/account',
   '/checkout',
+  '/login',
+  '/signin',
   '/purchased',
   '/api/',
   '/search',

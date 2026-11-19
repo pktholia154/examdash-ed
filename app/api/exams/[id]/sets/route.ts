@@ -5,6 +5,7 @@ import {
   normalizeExamSetsPayload,
   type NormalizedExamSet,
 } from '@/core/exam/schema';
+import { isReviewerSessionToken } from '@/core/auth/reviewer-account';
 import {
   extractBearerToken,
   fetchServerExamFilePaths,
@@ -73,10 +74,11 @@ export async function GET(
     if (mode === 'sample') {
       // Try loading real sampleJsonStoragePath from Firebase Storage first (with user token if signed in)
       if (examPaths.sampleJsonStoragePath) {
+        const storageToken = token && !isReviewerSessionToken(token) ? token : null;
         const result = await fetchJsonFromStorage(
           examPaths.sampleJsonStoragePath,
-          token,
-          token ? 'no-store' : 'force-cache'
+          storageToken,
+          storageToken ? 'no-store' : 'force-cache'
         );
         if (result.ok) {
           const parsedSets = normalizeExamSetsPayload(result.data);
@@ -163,7 +165,11 @@ export async function GET(
       );
     }
 
-    const fullResult = await fetchJsonFromStorage(examPaths.fullJsonStoragePath, token, 'no-store');
+    const fullResult = await fetchJsonFromStorage(
+      examPaths.fullJsonStoragePath,
+      verifiedUser.isReviewerSession ? null : token,
+      'no-store'
+    );
     if (!fullResult.ok) {
       return NextResponse.json(
         {

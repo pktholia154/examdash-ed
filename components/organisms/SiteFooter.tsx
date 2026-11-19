@@ -75,6 +75,14 @@ export function SiteFooter() {
             >
               {BUSINESS_IDENTITY.officialWebsite}
             </a>
+            <span aria-hidden="true">·</span>
+            <Link
+              href="/login"
+              rel="nofollow"
+              className="hover:text-[var(--text-primary)] hover:underline"
+            >
+              Partner Login
+            </Link>
           </p>
         </div>
       </div>
