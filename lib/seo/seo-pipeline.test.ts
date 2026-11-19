@@ -2,12 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildBookDetailGraph,
+  buildContactPageGraph,
   buildExamDetailGraph,
   buildHomeCollectionGraph,
   buildHubCollectionGraph,
+  buildLegalPageGraph,
   buildOrganizationGraph,
+  getCanonicalBaseUrl,
   normalizeLanguageTag,
 } from './structured-data';
+import {
+  BUSINESS_IDENTITY,
+  COMPLIANCE_PAGE_LINKS,
+} from '../compliance/business-info';
 import {
   buildSitemapIndexXml,
   buildSitemapUrlsetXml,
@@ -21,7 +28,6 @@ import {
   evaluateHostPolicy,
   normalizeHostname,
 } from './host-policy';
-import { getCanonicalBaseUrl } from './structured-data';
 import type { PublicBookDTO, PublicExamPackDTO } from '@/lib/design-system/types';
 
 const SAMPLE_BOOK: PublicBookDTO = {
@@ -232,4 +238,46 @@ test('Host policy redirects production mirrors cleanly without port leaks while 
     if (prev === undefined) delete process.env.CANONICAL_APP_URL;
     else process.env.CANONICAL_APP_URL = prev;
   }
+});
+
+test('Compliance pages and contact graphs include verified Razorpay merchant details and clean Schema.org markup', () => {
+  assert.equal(COMPLIANCE_PAGE_LINKS.length, 5);
+  assert.deepEqual(
+    COMPLIANCE_PAGE_LINKS.map((l) => l.href),
+    ['/privacy-policy', '/terms-of-service', '/refund-policy', '/license-agreement', '/contact-us']
+  );
+
+  assert.equal(BUSINESS_IDENTITY.legalName, 'Pardeep Kumar');
+  assert.equal(BUSINESS_IDENTITY.brandName, 'Exam Kart');
+  assert.equal(BUSINESS_IDENTITY.supportEmail, 'support@exam-kart.com');
+  assert.equal(BUSINESS_IDENTITY.officialWebsite, 'https://exam-dash.com/');
+  assert.equal(
+    BUSINESS_IDENTITY.officeAddress,
+    '1st Floor, SCO-28, Sector 13, Bhiwani, Haryana 127021, India'
+  );
+
+  const legalGraph = buildLegalPageGraph('https://exam-dash.com', {
+    path: '/refund-policy',
+    name: 'Refund & Cancellation Policy',
+    description: 'Refund & Cancellation Policy for Exam Kart',
+    dateModified: BUSINESS_IDENTITY.policyEffectiveIso,
+  });
+  assert.equal(legalGraph['@graph'][0]['@type'], 'WebPage');
+  assert.equal(legalGraph['@graph'][0].url, 'https://exam-dash.com/refund-policy');
+
+  const contactGraph = buildContactPageGraph('https://exam-dash.com', {
+    legalName: BUSINESS_IDENTITY.legalName,
+    brandName: BUSINESS_IDENTITY.brandName,
+    email: BUSINESS_IDENTITY.supportEmail,
+    address: BUSINESS_IDENTITY.officeAddress,
+    website: BUSINESS_IDENTITY.officialWebsite,
+    dateModified: BUSINESS_IDENTITY.policyEffectiveIso,
+  });
+  const json = JSON.stringify(contactGraph);
+  assert.equal(contactGraph['@graph'][0]['@type'], 'ContactPage');
+  assert.equal(json.includes('Pardeep Kumar'), true);
+  assert.equal(json.includes('Exam Kart'), true);
+  assert.equal(json.includes('support@exam-kart.com'), true);
+  assert.equal(json.includes('1st Floor, SCO-28, Sector 13, Bhiwani, Haryana 127021, India'), true);
+  assert.equal(json.includes('FAQPage'), false);
 });

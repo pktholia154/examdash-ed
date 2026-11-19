@@ -342,3 +342,100 @@ export function buildExamDetailGraph(baseUrl: string, exam: PublicExamPackDTO) {
     ],
   };
 }
+
+export function buildLegalPageGraph(
+  baseUrl: string,
+  page: {
+    readonly path: string;
+    readonly name: string;
+    readonly description: string;
+    readonly dateModified: string;
+  }
+) {
+  const canonicalUrl = `${baseUrl}${page.path}`;
+  return {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'WebPage',
+        '@id': `${canonicalUrl}#webpage`,
+        url: canonicalUrl,
+        name: page.name,
+        description: page.description,
+        isPartOf: { '@id': `${baseUrl}/#website` },
+        about: { '@id': `${baseUrl}/#organization` },
+        breadcrumb: { '@id': `${canonicalUrl}#breadcrumb` },
+        dateModified: page.dateModified,
+        inLanguage: 'en',
+      },
+      {
+        '@type': 'BreadcrumbList',
+        '@id': `${canonicalUrl}#breadcrumb`,
+        itemListElement: [
+          { '@type': 'ListItem', position: 1, name: 'Home', item: baseUrl },
+          { '@type': 'ListItem', position: 2, name: page.name, item: canonicalUrl },
+        ],
+      },
+    ],
+  };
+}
+
+export function buildContactPageGraph(
+  baseUrl: string,
+  contact: {
+    readonly legalName: string;
+    readonly brandName: string;
+    readonly email: string;
+    readonly address: string;
+    readonly website: string;
+    readonly dateModified: string;
+  }
+) {
+  const canonicalUrl = `${baseUrl}/contact-us`;
+  return {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'ContactPage',
+        '@id': `${canonicalUrl}#webpage`,
+        url: canonicalUrl,
+        name: `Contact Us — ${contact.brandName}`,
+        description: `Official contact, customer support, and grievance redressal details for ${contact.brandName} (${contact.legalName}).`,
+        isPartOf: { '@id': `${baseUrl}/#website` },
+        breadcrumb: { '@id': `${canonicalUrl}#breadcrumb` },
+        dateModified: contact.dateModified,
+        inLanguage: 'en',
+        mainEntity: {
+          '@type': 'Organization',
+          '@id': `${baseUrl}/#organization`,
+          name: contact.brandName,
+          legalName: contact.legalName,
+          url: contact.website,
+          email: contact.email,
+          address: {
+            '@type': 'PostalAddress',
+            streetAddress: contact.address,
+            addressLocality: 'Bhiwani',
+            addressRegion: 'Haryana',
+            postalCode: '127021',
+            addressCountry: 'IN',
+          },
+          contactPoint: {
+            '@type': 'ContactPoint',
+            contactType: 'customer support',
+            email: contact.email,
+            availableLanguage: ['English', 'Hindi'],
+          },
+        },
+      },
+      {
+        '@type': 'BreadcrumbList',
+        '@id': `${canonicalUrl}#breadcrumb`,
+        itemListElement: [
+          { '@type': 'ListItem', position: 1, name: 'Home', item: baseUrl },
+          { '@type': 'ListItem', position: 2, name: 'Contact Us', item: canonicalUrl },
+        ],
+      },
+    ],
+  };
+}

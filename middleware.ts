@@ -50,7 +50,12 @@ function isCanonicalPublicHtmlPath(pathname: string): boolean {
     pathname === '/books' ||
     pathname.startsWith('/books/') ||
     pathname === '/exams' ||
-    pathname.startsWith('/exams/')
+    pathname.startsWith('/exams/') ||
+    pathname === '/privacy-policy' ||
+    pathname === '/terms-of-service' ||
+    pathname === '/refund-policy' ||
+    pathname === '/license-agreement' ||
+    pathname === '/contact-us'
   );
 }
 

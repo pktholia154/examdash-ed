@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server';
 import { fetchHomeCatalog } from '@/lib/firebase/server-catalog';
+import {
+  BUSINESS_IDENTITY,
+  COMPLIANCE_PAGE_LINKS,
+} from '@/lib/compliance/business-info';
 import { getCanonicalBaseUrl } from '@/lib/seo/structured-data';
 import {
   buildSitemapUrlsetXml,
@@ -9,7 +13,7 @@ import {
   type SitemapUrlEntry,
 } from '@/lib/seo/sitemap-builder';
 
-export const revalidate = 300;
+export const dynamic = 'force-dynamic';
 
 interface RouteContext {
   params: Promise<{ shard: string }>;
@@ -74,6 +78,13 @@ export async function GET(_req: Request, context: RouteContext) {
       entries.push({
         loc: `${baseUrl}/exams`,
         lastmod: latestExams,
+      });
+    }
+
+    for (const page of COMPLIANCE_PAGE_LINKS) {
+      entries.push({
+        loc: `${baseUrl}${page.href}`,
+        lastmod: BUSINESS_IDENTITY.policyEffectiveIso,
       });
     }
 
