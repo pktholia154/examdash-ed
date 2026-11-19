@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { CatalogItemCard } from '@/components/molecules/CatalogItemCard';
 import { getContentTypeConfig } from '@/lib/design-system/content-types';
 import type { ContentTypeKey, ViewMode } from '@/lib/design-system/tokens';
@@ -59,17 +60,29 @@ export function ContentCollectionSection({
               id={`section-heading-${contentType}`}
               className="text-section font-bold text-[var(--text-primary)]"
             >
-              {config.label}
+              <Link href={config.routePrefix} className="hover:text-[var(--brand-accent)]">
+                {config.label}
+              </Link>
             </h2>
           </div>
           <p className="text-sm text-[var(--text-secondary)]">{config.description}</p>
         </div>
 
-        <p className="font-mono-tabular text-xs font-medium text-[var(--text-muted)]">
-          {searchQuery.trim()
-            ? `${items.length} of ${totalInCollection} matching`
-            : countLabel}
-        </p>
+        <div className="flex items-center gap-4">
+          <p className="font-mono-tabular text-xs font-medium text-[var(--text-muted)]">
+            {searchQuery.trim()
+              ? `${items.length} of ${totalInCollection} matching`
+              : countLabel}
+          </p>
+          {totalInCollection > 0 && (
+            <Link
+              href={config.routePrefix}
+              className="text-xs font-semibold text-[var(--brand-accent)] hover:underline whitespace-nowrap"
+            >
+              View all {config.label.toLowerCase()}
+            </Link>
+          )}
+        </div>
       </div>
 
       {items.length === 0 ? (

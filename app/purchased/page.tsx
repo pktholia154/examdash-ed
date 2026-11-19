@@ -17,6 +17,8 @@ export const metadata: Metadata = {
 
 export default async function PurchasedPage() {
   const catalog = await fetchHomeCatalog();
+  const compactBooks = catalog.books.map((b) => ({ ...b, fullDescription: '' }));
+  const compactExams = catalog.exams.map((e) => ({ ...e, fullDescription: '' }));
 
   return (
     <Suspense
@@ -26,7 +28,7 @@ export default async function PurchasedPage() {
         </div>
       }
     >
-      <PurchasedLibraryTemplate books={catalog.books} exams={catalog.exams} />
+      <PurchasedLibraryTemplate books={compactBooks} exams={compactExams} />
     </Suspense>
   );
 }

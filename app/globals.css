@@ -330,6 +330,106 @@
   border: 1px solid var(--md-border);
 }
 
+/* --- Server-Rendered Detail Overview Editorial Markdown --- */
+.seo-overview-prose {
+  font-size: 0.9375rem;
+  line-height: 1.7;
+  max-width: 68ch;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.seo-overview-prose > :first-child {
+  margin-top: 0;
+}
+
+.seo-overview-prose h3 {
+  font-size: 1.0625rem;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--text-primary);
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.seo-overview-prose h4,
+.seo-overview-prose h5,
+.seo-overview-prose h6 {
+  font-size: 0.96875rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+  margin-top: 1.25rem;
+  margin-bottom: 0.4rem;
+}
+
+.seo-overview-prose p {
+  margin-block: 0.75rem;
+}
+
+.seo-overview-prose strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.seo-overview-prose ul,
+.seo-overview-prose ol {
+  margin-block: 0.75rem;
+  padding-left: 1.35rem;
+}
+
+.seo-overview-prose ul {
+  list-style-type: disc;
+}
+
+.seo-overview-prose ol {
+  list-style-type: decimal;
+}
+
+.seo-overview-prose li {
+  margin-block: 0.35rem;
+}
+
+.seo-overview-prose hr {
+  margin-block: 1.35rem;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.seo-overview-prose blockquote {
+  margin-block: 1rem;
+  padding: 0.75rem 1rem;
+  border-left: 3px solid var(--border-strong);
+  background-color: var(--surface-subtle);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.seo-overview-prose a {
+  color: var(--brand-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.seo-overview-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-block: 1rem;
+  font-size: 0.875rem;
+}
+
+.seo-overview-prose th,
+.seo-overview-prose td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+}
+
+.seo-overview-prose th {
+  font-weight: 600;
+  color: var(--text-primary);
+  background-color: var(--surface-subtle);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

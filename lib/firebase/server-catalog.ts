@@ -25,8 +25,14 @@ interface FirestoreDocument {
 
 interface FirestoreListResponse {
   documents?: FirestoreDocument[];
+  nextPageToken?: string;
   error?: { message?: string; code?: number };
 }
+
+export type EntityLookupResult<T> =
+  | { readonly status: 'found'; readonly item: T; readonly needsCanonicalRedirect: boolean }
+  | { readonly status: 'gone' }
+  | { readonly status: 'not_found' };
 
 export function decodeFirestoreValue(val?: FirestoreValue): unknown {
   if (!val) return undefined;
@@ -93,14 +99,15 @@ export function projectPublicBook(
   const title = asString(decodeFirestoreValue(rawFields.title)).trim();
   if (!title) return null;
 
-  const urlSlug = asString(decodeFirestoreValue(rawFields.urlSlug), id.toLowerCase());
+  const rawSlug = asString(decodeFirestoreValue(rawFields.urlSlug), id.toLowerCase()).trim();
+  const urlSlug = rawSlug.toLowerCase();
 
   return {
     id,
     contentType: 'books',
     title,
     urlSlug,
-    seoDescription: asString(decodeFirestoreValue(rawFields.seoDescription)),
+    seoDescription: asString(decodeFirestoreValue(rawFields.seoDescription)).trim(),
     fullDescription: asString(decodeFirestoreValue(rawFields.fullDescription)),
     type: asString(decodeFirestoreValue(rawFields.type), 'Book'),
     language: asString(decodeFirestoreValue(rawFields.language), 'English'),
@@ -138,7 +145,8 @@ export function projectPublicExamPack(
   const title = asString(decodeFirestoreValue(rawFields.title)).trim();
   if (!title) return null;
 
-  const urlSlug = asString(decodeFirestoreValue(rawFields.urlSlug), id.toLowerCase());
+  const rawSlug = asString(decodeFirestoreValue(rawFields.urlSlug), id.toLowerCase()).trim();
+  const urlSlug = rawSlug.toLowerCase();
   const rawMocktests = decodeFirestoreValue(rawFields.MocktestTitles);
   const mocktestTitles: MocktestTitleItem[] = Array.isArray(rawMocktests)
     ? rawMocktests
@@ -157,7 +165,7 @@ export function projectPublicExamPack(
     contentType: 'exams',
     title,
     urlSlug,
-    seoDescription: asString(decodeFirestoreValue(rawFields.seoDescription)),
+    seoDescription: asString(decodeFirestoreValue(rawFields.seoDescription)).trim(),
     fullDescription: asString(decodeFirestoreValue(rawFields.fullDescription)),
     type: asString(decodeFirestoreValue(rawFields.type), 'Exam Pack'),
     language: asString(decodeFirestoreValue(rawFields.language), 'English'),
@@ -176,22 +184,45 @@ export function projectPublicExamPack(
   };
 }
 
+const MAX_COLLECTION_PAGES = 50;
+
 async function fetchCollectionRaw(collectionName: string, cacheTag: string): Promise<FirestoreDocument[]> {
   const encodedDb = encodeURIComponent(FIRESTORE_DATABASE_ID);
   const encodedCollection = encodeURIComponent(collectionName);
-  const url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_CONFIG.projectId}/databases/${encodedDb}/documents/${encodedCollection}?pageSize=100&key=${FIREBASE_CONFIG.apiKey}`;
+  const baseUrl = `https://firestore.googleapis.com/v1/projects/${FIREBASE_CONFIG.projectId}/databases/${encodedDb}/documents/${encodedCollection}`;
 
-  const response = await fetch(url, {
-    next: { revalidate: 120, tags: [cacheTag] },
-  });
+  const allDocs: FirestoreDocument[] = [];
+  let pageToken: string | undefined;
 
-  if (!response.ok) {
-    const errText = await response.text().catch(() => '');
-    throw new Error(`Firestore fetch failed for ${collectionName} (${response.status}): ${errText}`);
+  for (let page = 0; page < MAX_COLLECTION_PAGES; page++) {
+    const params = new URLSearchParams({
+      pageSize: '200',
+      key: FIREBASE_CONFIG.apiKey,
+    });
+    if (pageToken) {
+      params.set('pageToken', pageToken);
+    }
+
+    const response = await fetch(`${baseUrl}?${params.toString()}`, {
+      next: { revalidate: 120, tags: [cacheTag, 'sitemap'] },
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`Firestore fetch failed for ${collectionName} (${response.status}): ${errText}`);
+    }
+
+    const payload = (await response.json()) as FirestoreListResponse;
+    if (payload.documents && payload.documents.length > 0) {
+      allDocs.push(...payload.documents);
+    }
+    if (!payload.nextPageToken) {
+      break;
+    }
+    pageToken = payload.nextPageToken;
   }
 
-  const payload = (await response.json()) as FirestoreListResponse;
-  return payload.documents ?? [];
+  return allDocs;
 }
 
 export async function fetchPublishedBooks(): Promise<PublicBookDTO[]> {
@@ -216,6 +247,51 @@ export async function fetchPublishedExams(): Promise<PublicExamPackDTO[]> {
   return results.sort((a, b) => (b.publishAt ?? '').localeCompare(a.publishAt ?? ''));
 }
 
+/**
+ * Resolves tombstone slugs (`isDeleted === true`) for HTTP 410 Gone responses.
+ * Note: Firestore public list rules only expose `isPublished == true && isDeleted == false`
+ * to anonymous callers, so deleted documents naturally resolve to 404 unless explicitly
+ * flagged in a public tombstone record or returned with `isDeleted: true`.
+ */
+export async function fetchDeletedCatalogSlugs(): Promise<{
+  readonly books: ReadonlySet<string>;
+  readonly exams: ReadonlySet<string>;
+}> {
+  const books = new Set<string>();
+  const exams = new Set<string>();
+
+  try {
+    const [bookDocs, examDocs] = await Promise.all([
+      fetchCollectionRaw(CONTENT_TYPE_REGISTRY.books.collectionName, 'catalog-books'),
+      fetchCollectionRaw(CONTENT_TYPE_REGISTRY.exams.collectionName, 'catalog-exams'),
+    ]);
+
+    for (const doc of bookDocs) {
+      const fields = doc.fields ?? {};
+      if (decodeFirestoreValue(fields.isDeleted) === true) {
+        const docId = (doc.name.split('/').pop() ?? '').toLowerCase();
+        const slug = asString(decodeFirestoreValue(fields.urlSlug)).trim().toLowerCase();
+        if (docId) books.add(docId);
+        if (slug) books.add(slug);
+      }
+    }
+
+    for (const doc of examDocs) {
+      const fields = doc.fields ?? {};
+      if (decodeFirestoreValue(fields.isDeleted) === true) {
+        const docId = (doc.name.split('/').pop() ?? '').toLowerCase();
+        const slug = asString(decodeFirestoreValue(fields.urlSlug)).trim().toLowerCase();
+        if (docId) exams.add(docId);
+        if (slug) exams.add(slug);
+      }
+    }
+  } catch {
+    // Fail open on tombstone scan; detail pages handle 404 deterministically
+  }
+
+  return { books, exams };
+}
+
 export async function fetchHomeCatalog(): Promise<HomeCatalogPayload> {
   try {
     const [books, exams] = await Promise.all([
@@ -238,22 +314,50 @@ export async function fetchHomeCatalog(): Promise<HomeCatalogPayload> {
   }
 }
 
-export async function fetchBookBySlug(slug: string): Promise<PublicBookDTO | null> {
-  const normalized = slug.trim().toLowerCase();
+export async function lookupBookBySlug(rawSlug: string): Promise<EntityLookupResult<PublicBookDTO>> {
+  const trimmed = rawSlug.trim();
+  const normalized = trimmed.toLowerCase();
+  if (!normalized) return { status: 'not_found' };
+
   const books = await fetchPublishedBooks();
-  return (
-    books.find(
-      (b) => b.urlSlug.toLowerCase() === normalized || b.id.toLowerCase() === normalized
-    ) ?? null
+  const match = books.find(
+    (b) => b.urlSlug.toLowerCase() === normalized || b.id.toLowerCase() === normalized
   );
+
+  if (match) {
+    const needsCanonicalRedirect = trimmed !== match.urlSlug;
+    return { status: 'found', item: match, needsCanonicalRedirect };
+  }
+
+  return { status: 'not_found' };
+}
+
+export async function lookupExamBySlug(
+  rawSlug: string
+): Promise<EntityLookupResult<PublicExamPackDTO>> {
+  const trimmed = rawSlug.trim();
+  const normalized = trimmed.toLowerCase();
+  if (!normalized) return { status: 'not_found' };
+
+  const exams = await fetchPublishedExams();
+  const match = exams.find(
+    (e) => e.urlSlug.toLowerCase() === normalized || e.id.toLowerCase() === normalized
+  );
+
+  if (match) {
+    const needsCanonicalRedirect = trimmed !== match.urlSlug;
+    return { status: 'found', item: match, needsCanonicalRedirect };
+  }
+
+  return { status: 'not_found' };
+}
+
+export async function fetchBookBySlug(slug: string): Promise<PublicBookDTO | null> {
+  const result = await lookupBookBySlug(slug);
+  return result.status === 'found' ? result.item : null;
 }
 
 export async function fetchExamBySlug(slug: string): Promise<PublicExamPackDTO | null> {
-  const normalized = slug.trim().toLowerCase();
-  const exams = await fetchPublishedExams();
-  return (
-    exams.find(
-      (e) => e.urlSlug.toLowerCase() === normalized || e.id.toLowerCase() === normalized
-    ) ?? null
-  );
+  const result = await lookupExamBySlug(slug);
+  return result.status === 'found' ? result.item : null;
 }

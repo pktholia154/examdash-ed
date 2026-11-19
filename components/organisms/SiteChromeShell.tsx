@@ -1,0 +1,83 @@
+'use client';
+
+import React from 'react';
+import { useRouter } from 'next/navigation';
+import { TopHeader } from '@/components/organisms/TopHeader';
+import { OfflineBanner } from '@/components/organisms/OfflineBanner';
+import { CartDrawer } from '@/components/organisms/CartDrawer';
+import { SiteFooter } from '@/components/organisms/SiteFooter';
+import { useAppSession } from '@/components/providers/AppSessionProvider';
+
+export interface SiteChromeShellProps {
+  readonly children: React.ReactNode;
+}
+
+/**
+ * Thin client layout chrome accepting Server Components as `children`
+ * so editorial SSR HTML is never duplicated into client hydration payloads.
+ */
+export function SiteChromeShell({ children }: SiteChromeShellProps) {
+  const router = useRouter();
+  const {
+    user,
+    authReady,
+    authBusy,
+    cartItems,
+    cartTotals,
+    cartOpen,
+    setCartOpen,
+    purchasedItems,
+    checkoutBusy,
+    checkoutError,
+    signIn,
+    signOut,
+    removeFromCart,
+    updateCartQuantity,
+    clearCart,
+    checkoutCart,
+  } = useAppSession();
+
+  const handleCartCheckout = async () => {
+    const receipt = await checkoutCart();
+    if (receipt) {
+      router.push(`/purchased?order=${encodeURIComponent(receipt.orderId)}`);
+    }
+  };
+
+  return (
+    <div className="flex min-h-dvh flex-col bg-[var(--surface-canvas)]">
+      <TopHeader
+        userName={user?.displayName ?? user?.email ?? null}
+        userPhotoUrl={user?.photoURL ?? null}
+        authReady={authReady}
+        authBusy={authBusy}
+        cartCount={cartTotals.itemCount}
+        purchasedCount={purchasedItems.length}
+        onSignIn={() => void signIn()}
+        onSignOut={() => void signOut()}
+        onOpenCart={() => setCartOpen(true)}
+      />
+
+      <OfflineBanner />
+
+      {children}
+
+      <SiteFooter />
+
+      <CartDrawer
+        open={cartOpen}
+        items={cartItems}
+        totals={cartTotals}
+        isSignedIn={Boolean(user)}
+        checkoutBusy={checkoutBusy}
+        checkoutError={checkoutError}
+        onClose={() => setCartOpen(false)}
+        onUpdateQuantity={(id, qty) => void updateCartQuantity(id, qty)}
+        onRemoveItem={(id) => void removeFromCart(id)}
+        onClearCart={() => void clearCart()}
+        onSignIn={() => void signIn()}
+        onCheckout={() => void handleCartCheckout()}
+      />
+    </div>
+  );
+}

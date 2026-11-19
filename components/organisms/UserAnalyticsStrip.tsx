@@ -55,12 +55,12 @@ export function UserAnalyticsStrip({
         {
           label: 'Published Books',
           value: String(publishedBooksCount),
-          detail: 'Live from Firebase books',
+          detail: 'Available study books',
         },
         {
           label: 'Published Exam Packs',
           value: String(publishedExamsCount),
-          detail: 'Live from ExamPackDocument',
+          detail: 'Online mock test series',
         },
         {
           label: 'Items in Cart',
@@ -78,6 +78,7 @@ export function UserAnalyticsStrip({
     <section
       id="overview"
       aria-labelledby="dashboard-overview-heading"
+      data-nosnippet=""
       className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-canvas)]"
     >
       <div className="flex flex-col gap-2 border-b border-[var(--border-subtle)] px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-5">

@@ -27,8 +27,6 @@ const monoFont = IBM_Plex_Mono({
   display: 'swap',
 });
 
-const BASE_URL = getCanonicalBaseUrl();
-
 export const viewport: Viewport = {
   themeColor: '#ffffff',
   width: 'device-width',
@@ -36,8 +34,10 @@ export const viewport: Viewport = {
   viewportFit: 'cover',
 };
 
-export const metadata: Metadata = {
-  metadataBase: new URL(BASE_URL),
+export function generateMetadata(): Metadata {
+  const baseUrl = getCanonicalBaseUrl();
+  return {
+    metadataBase: new URL(baseUrl),
   title: {
     default: 'ExamDash (ed) — Study Books & Online Exam Packs',
     template: '%s | ExamDash (ed)',
@@ -45,12 +45,16 @@ export const metadata: Metadata = {
   description:
     'Discover curated digital study books, MCQ question banks, and online competitive exam mock test series on ExamDash (ed).',
   applicationName: 'ExamDash (ed)',
-  alternates: {
-    canonical: '/',
-  },
   robots: {
     index: true,
     follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      'max-image-preview': 'large',
+      'max-snippet': -1,
+      'max-video-preview': -1,
+    },
   },
   openGraph: {
     type: 'website',
@@ -58,7 +62,14 @@ export const metadata: Metadata = {
     title: 'ExamDash (ed) — Study Books & Online Exam Packs',
     description:
       'Discover curated digital study books, MCQ question banks, and online competitive exam mock test series on ExamDash (ed).',
-    url: '/',
+    images: [
+      {
+        url: '/pwa-512x512.png',
+        width: 512,
+        height: 512,
+        alt: 'ExamDash (ed)',
+      },
+    ],
   },
   twitter: {
     card: 'summary_large_image',
@@ -78,7 +89,8 @@ export const metadata: Metadata = {
     ],
     apple: [{ url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],
   },
-};
+  };
+}
 
 const SPECULATION_RULES = {
   prefetch: [
@@ -90,6 +102,8 @@ const SPECULATION_RULES = {
           { not: { href_matches: '/account/*' } },
           { not: { href_matches: '/checkout/*' } },
           { not: { href_matches: '/admin/*' } },
+          { not: { href_matches: '/purchased*' } },
+          { not: { href_matches: '/exams/*/attempt*' } },
           { not: { selector_matches: '[rel~=nofollow]' } },
         ],
       },
@@ -110,6 +124,7 @@ const SPECULATION_RULES = {
       where: {
         and: [
           { href_matches: '/exams/*' },
+          { not: { href_matches: '/exams/*/attempt*' } },
           { not: { selector_matches: '[rel~=nofollow]' } },
         ],
       },
@@ -119,7 +134,7 @@ const SPECULATION_RULES = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  const orgGraph = buildOrganizationGraph(BASE_URL);
+  const orgGraph = buildOrganizationGraph(getCanonicalBaseUrl());
 
   return (
     <html

@@ -47,25 +47,26 @@ export function TopHeader({
           className="hidden items-center gap-7 text-sm font-medium text-[var(--text-secondary)] md:flex"
         >
           <Link
-            href="/#overview"
+            href="/"
             className="whitespace-nowrap shrink-0 transition-colors hover:text-[var(--text-primary)]"
           >
-            Overview
+            Home
           </Link>
           <Link
-            href="/#books"
+            href="/books"
             className="whitespace-nowrap shrink-0 transition-colors hover:text-[var(--text-primary)]"
           >
             Books
           </Link>
           <Link
-            href="/#exams"
+            href="/exams"
             className="whitespace-nowrap shrink-0 transition-colors hover:text-[var(--text-primary)]"
           >
             Exams
           </Link>
           <Link
             href="/purchased"
+            rel="nofollow"
             className="inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors hover:text-[var(--text-primary)]"
           >
             <span>Purchased</span>
@@ -81,6 +82,7 @@ export function TopHeader({
         <div className="flex items-center gap-1.5 shrink-0 sm:gap-2" data-nosnippet="">
           <Link
             href="/purchased"
+            rel="nofollow"
             aria-label="Purchased library"
             className="inline-flex h-11 min-w-[44px] items-center justify-center gap-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-canvas)] px-2 text-xs font-medium text-[var(--text-primary)] whitespace-nowrap shrink-0 transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--surface-hover)] md:hidden"
           >

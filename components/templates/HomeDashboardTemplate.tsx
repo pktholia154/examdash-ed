@@ -124,7 +124,7 @@ export function HomeDashboardTemplate({
               Study books and online exam packs
             </h1>
             <p className="text-sm leading-relaxed text-[var(--text-secondary)] sm:text-base">
-              Search curated question banks, digital study books, and timed mock test series synced live from ExamDash.
+              Browse curated study books, MCQ question banks, and timed online competitive exam mock test series.
             </p>
           </div>
 
@@ -170,9 +170,10 @@ export function HomeDashboardTemplate({
         {catalogError && (
           <div
             role="alert"
+            data-nosnippet=""
             className="rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-900"
           >
-            Unable to load catalog items from Firebase right now. Please refresh to retry.
+            Unable to load catalog items right now. Please refresh to retry.
           </div>
         )}
 
