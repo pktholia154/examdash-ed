@@ -1,0 +1,8 @@
+{
+  "name": "ExamDash (ed)",
+  "description": "ExamDash (ed) — Crawl-first digital library and competitive exam preparation platform for curated study books, question banks, and online mock test series.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

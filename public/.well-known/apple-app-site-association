@@ -1,0 +1,14 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "TEAMID.com.examdash.app",
+        "paths": ["/books/*", "/exams/*", "/"]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": ["TEAMID.com.examdash.app"]
+  }
+}

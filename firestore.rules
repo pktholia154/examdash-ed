@@ -1,0 +1,325 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'pardeep1984@gmail.com'
+      );
+    }
+
+    function isValidTagList(tags) {
+      return tags is list && tags.size() <= 20 && (tags.size() == 0 || (tags[0] is string && tags[0].size() <= 60));
+    }
+
+    function isValidBook(data) {
+      return data.keys().hasAll(['id', 'isPublished', 'isDeleted', 'title', 'urlSlug', 'currency', 'listPrice', 'buyPrice']) &&
+        data.keys().hasOnly([
+          'id', 'isPublished', 'isDeleted', 'createdAt', 'updatedAt', 'publishAt',
+          'title', 'urlSlug', 'seoDescription', 'fullDescription', 'type', 'language',
+          'publisher', 'authorName', 'tags', 'currency', 'listPrice', 'buyPrice',
+          'sampleMarkdownUrl', 'samplePdfUrl', 'fullMarkdownStoragePath', 'fullPdfStoragePath'
+        ]) &&
+        isValidId(data.id) &&
+        data.isPublished is bool &&
+        data.isDeleted is bool &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 240 &&
+        data.urlSlug is string && data.urlSlug.size() >= 1 && data.urlSlug.size() <= 240 &&
+        data.currency is string && data.currency.size() >= 3 && data.currency.size() <= 8 &&
+        data.listPrice is number && data.listPrice >= 0 &&
+        data.buyPrice is number && data.buyPrice >= 0 &&
+        (!('seoDescription' in data) || (data.seoDescription is string && data.seoDescription.size() <= 500)) &&
+        (!('fullDescription' in data) || (data.fullDescription is string && data.fullDescription.size() <= 10000)) &&
+        (!('type' in data) || (data.type is string && data.type.size() <= 80)) &&
+        (!('language' in data) || (data.language is string && data.language.size() <= 60)) &&
+        (!('publisher' in data) || (data.publisher is string && data.publisher.size() <= 120)) &&
+        (!('authorName' in data) || (data.authorName is string && data.authorName.size() <= 120)) &&
+        (!('tags' in data) || isValidTagList(data.tags)) &&
+        (!('sampleMarkdownUrl' in data) || (data.sampleMarkdownUrl is string && data.sampleMarkdownUrl.size() <= 1000)) &&
+        (!('samplePdfUrl' in data) || (data.samplePdfUrl is string && data.samplePdfUrl.size() <= 1000)) &&
+        (!('fullMarkdownStoragePath' in data) || (data.fullMarkdownStoragePath is string && data.fullMarkdownStoragePath.size() <= 500)) &&
+        (!('fullPdfStoragePath' in data) || (data.fullPdfStoragePath is string && data.fullPdfStoragePath.size() <= 500));
+    }
+
+    function isValidExamPack(data) {
+      return data.keys().hasAll(['id', 'isPublished', 'isDeleted', 'title', 'urlSlug', 'currency', 'listPrice', 'buyPrice', 'totalMocktest']) &&
+        data.keys().hasOnly([
+          'id', 'isPublished', 'isDeleted', 'createdAt', 'updatedAt', 'publishAt',
+          'title', 'urlSlug', 'seoDescription', 'fullDescription', 'type', 'language',
+          'publisher', 'authorName', 'tags', 'currency', 'listPrice', 'buyPrice',
+          'totalMocktest', 'MocktestTitles', 'fullJsonStoragePath', 'sampleJsonStoragePath'
+        ]) &&
+        isValidId(data.id) &&
+        data.isPublished is bool &&
+        data.isDeleted is bool &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 240 &&
+        data.urlSlug is string && data.urlSlug.size() >= 1 && data.urlSlug.size() <= 240 &&
+        data.currency is string && data.currency.size() >= 3 && data.currency.size() <= 8 &&
+        data.listPrice is number && data.listPrice >= 0 &&
+        data.buyPrice is number && data.buyPrice >= 0 &&
+        data.totalMocktest is number && data.totalMocktest >= 0 && data.totalMocktest <= 500 &&
+        (!('seoDescription' in data) || (data.seoDescription is string && data.seoDescription.size() <= 500)) &&
+        (!('fullDescription' in data) || (data.fullDescription is string && data.fullDescription.size() <= 10000)) &&
+        (!('type' in data) || (data.type is string && data.type.size() <= 80)) &&
+        (!('language' in data) || (data.language is string && data.language.size() <= 60)) &&
+        (!('publisher' in data) || (data.publisher is string && data.publisher.size() <= 120)) &&
+        (!('authorName' in data) || (data.authorName is string && data.authorName.size() <= 120)) &&
+        (!('tags' in data) || isValidTagList(data.tags)) &&
+        (!('MocktestTitles' in data) || (data.MocktestTitles is list && data.MocktestTitles.size() <= 200)) &&
+        (!('fullJsonStoragePath' in data) || (data.fullJsonStoragePath is string && data.fullJsonStoragePath.size() <= 500)) &&
+        (!('sampleJsonStoragePath' in data) || (data.sampleJsonStoragePath is string && data.sampleJsonStoragePath.size() <= 500));
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid', 'testsAttempted', 'booksOwned', 'examsOwned', 'averageAccuracy', 'studyStreakDays', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'displayName', 'email', 'photoURL',
+          'testsAttempted', 'booksOwned', 'examsOwned', 'averageAccuracy', 'studyStreakDays',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.uid) &&
+        data.uid == userId &&
+        data.uid == request.auth.uid &&
+        (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 120)) &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 254)) &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 1000)) &&
+        data.testsAttempted is number && data.testsAttempted >= 0 && data.testsAttempted <= 100000 &&
+        data.booksOwned is number && data.booksOwned >= 0 && data.booksOwned <= 10000 &&
+        data.examsOwned is number && data.examsOwned >= 0 && data.examsOwned <= 10000 &&
+        data.averageAccuracy is number && data.averageAccuracy >= 0 && data.averageAccuracy <= 100 &&
+        data.studyStreakDays is number && data.studyStreakDays >= 0 && data.studyStreakDays <= 10000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCartItem(data, userId) {
+      return data.keys().hasAll([
+          'id', 'uid', 'itemId', 'contentType', 'title', 'urlSlug', 'currency', 'buyPrice', 'listPrice', 'quantity', 'addedAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'uid', 'itemId', 'contentType', 'title', 'urlSlug', 'currency', 'buyPrice', 'listPrice', 'quantity', 'addedAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.uid) &&
+        isValidId(data.itemId) &&
+        data.uid == userId &&
+        data.uid == request.auth.uid &&
+        data.contentType in ['books', 'exams', 'quizbooks'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 240 &&
+        data.urlSlug is string && data.urlSlug.size() >= 1 && data.urlSlug.size() <= 240 &&
+        data.currency is string && data.currency.size() >= 3 && data.currency.size() <= 8 &&
+        data.buyPrice is number && data.buyPrice >= 0 && data.buyPrice <= 1000000 &&
+        data.listPrice is number && data.listPrice >= 0 && data.listPrice <= 1000000 &&
+        data.quantity is int && data.quantity >= 1 && data.quantity <= 20 &&
+        data.addedAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPurchase(data, userId) {
+      return data.keys().hasAll([
+          'id', 'uid', 'itemId', 'contentType', 'title', 'urlSlug', 'currency', 'amountPaid',
+          'razorpayOrderId', 'razorpayPaymentId', 'entitlementProof', 'status', 'purchasedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'uid', 'itemId', 'contentType', 'title', 'urlSlug', 'currency', 'amountPaid',
+          'razorpayOrderId', 'razorpayPaymentId', 'entitlementProof', 'status', 'purchasedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.uid) &&
+        isValidId(data.itemId) &&
+        data.uid == userId &&
+        data.uid == request.auth.uid &&
+        data.contentType in ['books', 'exams', 'quizbooks'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 240 &&
+        data.urlSlug is string && data.urlSlug.size() >= 1 && data.urlSlug.size() <= 240 &&
+        data.currency is string && data.currency.size() >= 3 && data.currency.size() <= 8 &&
+        data.amountPaid is number && data.amountPaid >= 0 && data.amountPaid <= 1000000 &&
+        data.razorpayOrderId is string && data.razorpayOrderId.size() >= 1 && data.razorpayOrderId.size() <= 128 &&
+        data.razorpayPaymentId is string && data.razorpayPaymentId.size() >= 1 && data.razorpayPaymentId.size() <= 128 &&
+        data.entitlementProof is string && data.entitlementProof.size() >= 16 && data.entitlementProof.size() <= 512 &&
+        data.status == 'completed' &&
+        data.purchasedAt is timestamp;
+    }
+
+    function isValidReadingProgress(data, userId) {
+      return data.keys().hasAll([
+          'id', 'uid', 'bookId', 'format', 'mode', 'pageIndex', 'totalPages',
+          'offsetRatio', 'blockIndex', 'zoomScale', 'progressPercent', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'uid', 'bookId', 'format', 'mode', 'pageIndex', 'totalPages',
+          'offsetRatio', 'blockIndex', 'zoomScale', 'progressPercent', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.uid) &&
+        isValidId(data.bookId) &&
+        data.uid == userId &&
+        data.uid == request.auth.uid &&
+        data.format in ['pdf', 'markdown'] &&
+        data.mode in ['sample', 'full'] &&
+        data.pageIndex is int && data.pageIndex >= 0 && data.pageIndex <= 50000 &&
+        data.totalPages is int && data.totalPages >= 0 && data.totalPages <= 50000 &&
+        data.offsetRatio is number && data.offsetRatio >= 0 && data.offsetRatio <= 1 &&
+        data.blockIndex is int && data.blockIndex >= 0 && data.blockIndex <= 100000 &&
+        data.zoomScale is number && data.zoomScale >= 0.5 && data.zoomScale <= 4 &&
+        data.progressPercent is number && data.progressPercent >= 0 && data.progressPercent <= 100 &&
+        data.updatedAt is timestamp;
+    }
+
+    // --- Admin Registry (read-only for self check) ---
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && isOwner(adminId);
+      allow list, create, update, delete: if false;
+    }
+
+    // --- Public Catalog: Books ---
+    match /books/{bookId} {
+      allow get: if isValidId(bookId) && ((existing().isPublished == true && existing().isDeleted == false) || isAdmin());
+      allow list: if (existing().isPublished == true && existing().isDeleted == false) || isAdmin();
+      allow create: if isVerifiedUser() && isValidId(bookId) && isValidBook(incoming()) && isAdmin() && incoming().id == bookId;
+      allow update: if isVerifiedUser() && isValidId(bookId) && isValidBook(incoming()) && isAdmin() && incoming().id == existing().id;
+      allow delete: if isVerifiedUser() && isValidId(bookId) && isAdmin();
+    }
+
+    // --- Public Catalog: ExamPackDocument ---
+    match /ExamPackDocument/{examId} {
+      allow get: if isValidId(examId) && ((existing().isPublished == true && existing().isDeleted == false) || isAdmin());
+      allow list: if (existing().isPublished == true && existing().isDeleted == false) || isAdmin();
+      allow create: if isVerifiedUser() && isValidId(examId) && isValidExamPack(incoming()) && isAdmin() && incoming().id == examId;
+      allow update: if isVerifiedUser() && isValidId(examId) && isValidExamPack(incoming()) && isAdmin() && incoming().id == existing().id;
+      allow delete: if isVerifiedUser() && isValidId(examId) && isAdmin();
+    }
+
+    // --- Private User Profiles & Analytics ---
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser() && isValidId(userId) && isValidUserProfile(incoming(), userId) &&
+        isOwner(userId) &&
+        incoming().testsAttempted == 0 &&
+        incoming().booksOwned == 0 &&
+        incoming().examsOwned == 0 &&
+        incoming().averageAccuracy == 0 &&
+        incoming().studyStreakDays == 0 &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(userId) && isValidUserProfile(incoming(), userId) && (
+        isAdmin() || (
+          isOwner(userId) &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt'])
+        )
+      );
+      allow delete: if isVerifiedUser() && isValidId(userId) && isAdmin();
+
+      // --- User Cart Subcollection (Master Gate via Parent Existence) ---
+      match /cart/{cartItemId} {
+        allow get: if isValidId(userId) && isValidId(cartItemId) && isOwner(userId);
+        allow list: if isValidId(userId) && isOwner(userId) && existing().uid == request.auth.uid;
+        allow create: if isVerifiedUser() && isValidId(userId) && isValidId(cartItemId) &&
+          isValidCartItem(incoming(), userId) &&
+          isOwner(userId) &&
+          incoming().id == cartItemId &&
+          incoming().addedAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId));
+        allow update: if isVerifiedUser() && isValidId(userId) && isValidId(cartItemId) &&
+          isValidCartItem(incoming(), userId) && (
+            isAdmin() || (
+              isOwner(userId) &&
+              incoming().id == existing().id &&
+              incoming().uid == existing().uid &&
+              incoming().itemId == existing().itemId &&
+              incoming().contentType == existing().contentType &&
+              incoming().addedAt == existing().addedAt &&
+              incoming().updatedAt == request.time &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['quantity', 'updatedAt']) &&
+              exists(/databases/$(database)/documents/users/$(userId))
+            )
+          );
+        allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(cartItemId) &&
+          (isOwner(userId) || isAdmin());
+      }
+
+      // --- User Purchases Subcollection (Terminal Immutable Records) ---
+      match /purchases/{purchaseId} {
+        allow get: if isValidId(userId) && isValidId(purchaseId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && existing().uid == userId;
+        allow create: if isVerifiedUser() && isValidId(userId) && isValidId(purchaseId) &&
+          isValidPurchase(incoming(), userId) &&
+          isOwner(userId) &&
+          incoming().id == purchaseId &&
+          incoming().purchasedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId));
+        allow update: if isVerifiedUser() && isValidId(userId) && isValidId(purchaseId) &&
+          isValidPurchase(incoming(), userId) &&
+          isAdmin() &&
+          existing().status != 'completed';
+        allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(purchaseId) && isAdmin();
+      }
+
+      // --- User Reading Progress Subcollection ---
+      match /readingProgress/{progressId} {
+        allow get: if isValidId(userId) && isValidId(progressId) && isOwner(userId);
+        allow list: if isValidId(userId) && isOwner(userId) && existing().uid == request.auth.uid;
+        allow create: if isVerifiedUser() && isValidId(userId) && isValidId(progressId) &&
+          isValidReadingProgress(incoming(), userId) &&
+          isOwner(userId) &&
+          incoming().id == progressId &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId));
+        allow update: if isVerifiedUser() && isValidId(userId) && isValidId(progressId) &&
+          isValidReadingProgress(incoming(), userId) && (
+            isAdmin() || (
+              isOwner(userId) &&
+              incoming().id == existing().id &&
+              incoming().uid == existing().uid &&
+              incoming().bookId == existing().bookId &&
+              incoming().format == existing().format &&
+              incoming().updatedAt == request.time &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'mode', 'pageIndex', 'totalPages', 'offsetRatio', 'blockIndex', 'zoomScale', 'progressPercent', 'updatedAt'
+              ]) &&
+              exists(/databases/$(database)/documents/users/$(userId))
+            )
+          );
+        allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(progressId) &&
+          (isOwner(userId) || isAdmin());
+      }
+    }
+  }
+}

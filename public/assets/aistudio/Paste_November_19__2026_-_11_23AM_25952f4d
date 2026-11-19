@@ -1,0 +1,830 @@
+
+
+Role: Act as a Principal Systems Architect specializing in Indian Computer-Based Testing (CBT) platforms like TCS iON, Think Exam, and Eklavvya.
+
+Objective: Design and implement a high-performance online exam engine.
+
+Core Requirements:
+- Seamless UX & Fast Rendering: Mirror standard Indian CBT ergonomics—sectional tabs, a color-coded question palette (Not Visited, Not Answered, Answered, Marked for Review, Answered & Marked), Clear/Save & Next controls, and keyboard shortcuts. Guarantee zero-lag switching using pre-rendering/memoization with crisp support for images, tables, and math (LaTeX/KaTeX).
+- Robustness & State Management: Build deterministic state management with instant local persistence (IndexedDB/LocalStorage) and a drift-free, timestamp-based countdown timer so accidental refreshes or browser crashes never lose answers, question statuses, or exact remaining time.
+- Post-Exam Analytics: Track per-question time spent, revisit counts, attempt accuracy, section-wise breakdowns, and configurable negative marking to generate a detailed post-exam review dashboard.
+
+Scope Exclusions: Completely omit anti-cheating, proctoring, browser lockdown, DRM, and commercial multi-tenant features. Optimize strictly for speed, stability, and distraction-free usability.
+
+based on above intent develop the system.
+we are providing you a sample online examination flow; develop in a robust sytem however do not change firebase/json data schemas as they already have data in firebase the format...; implement what is required for front end UI.
+
+Also on exam detals page ...show 1st test as sample sampleJsonStoragePath: and add the product to puchage page aftersuccessful purchase and flatout all exam sets seperately for full json file so that a user can attempt all exam sets after purchase.
+Improvise other critical aspects keep exam data schema as it is.
+
+
+Pillar 1: Firebase Firestore Collection Schema (exam_packs/{id})
+Remains 100% lightweight and minimal. One document per pack pointing to a single JSON file in storage containing all exam sets in that pack.
+Firebase collection ExamPackDocument:
+
+id: string;
+isPublished: boolean;
+isDeleted: boolean;
+createdAt: Timestamp;
+updatedAt: Timestamp;
+publishAt: Timestamp;
+title: string;
+urlSlug: string;
+seoDescription: string;
+fullDescription: string;
+type: string;
+language: string;
+publisher: string;
+authorName: string;
+tags: string[];
+currency: string;
+listPrice: number;
+buyPrice: number;
+totalMocktest: number;
+MocktestTitles: Array<{
+  id: string;
+  title: string;
+  duration: number;
+  totalQuestions: number;
+  totalMarks: number;
+}>;
+fullJsonStoragePath: string;
+sampleJsonStoragePath: string;}
+________________________________________
+Pillar 2: Universal Single-File Multi-Set JSON Schema
+Stored at fullJsonStoragePath as a single JSON array [ ... ] containing all exam sets. Demonstrates NAT, 5-option MCQ, 4-option MCQ with multi-visuals (svg + mermaid), and partial-credit MSQ with a two-column table in one minimal schema:
+JSON
+[
+  {
+    "id": "exam_set_1",
+    "title": "Mock Set 01: Comprehensive Multi-Pattern Assessment",
+    "duration": 60,
+    "totalQuestions": 4,
+    "totalMarks": 12,
+    "sectionalTiming": true,
+    "calculator": "scientific",
+    "sections": [
+      {
+        "id": "sec_1",
+        "title": "Data Interpretation & Analytical Reasoning",
+        "duration": 60,
+        "totalQuestions": 4,
+        "maxAttempts": null,
+        "contexts": [
+          {
+            "id": "sec_1_ctx_1",
+            "text": "**Directions (Q1 – Q2):** Study the following **three interconnected visuals** (Chart 1, Chart 2, and Table 1) carefully to answer the questions that follow.",
+            "visuals": [
+              {
+                "id": "v1",
+                "type": "chart",
+                "chartType": "pie",
+                "title": "Chart 1: Percentage Breakup of Total Cloud Server Traffic (Total = 8,000 TB)",
+                "note": "**Note:** Traffic in Region X consists of only Web and API requests.",
+                "xAxisKey": "region",
+                "series": [{ "key": "share", "label": "Traffic Share (%)" }],
+                "data": [
+                  { "region": "Region X", "share": 35 },
+                  { "region": "Region Y", "share": 45 },
+                  { "region": "Region Z", "share": 20 }
+                ]
+              },
+              {
+                "id": "v2",
+                "type": "chart",
+                "chartType": "combo",
+                "title": "Chart 2: Cost per TB (₹ Thousand) & Outage Duration (Hours)",
+                "note": "**Formula:** $\\text{Total SLA Penalty} = \\text{Outage Hours} \\times ₹15,000$.",
+                "xAxisKey": "region",
+                "series": [
+                  { "key": "cost", "label": "Cost/TB (₹ '000)", "type": "bar", "yAxis": "left" },
+                  { "key": "outage", "label": "Outage (Hrs)", "type": "line", "yAxis": "right" }
+                ],
+                "data": [
+                  { "region": "Region X", "cost": 12, "outage": 4 },
+                  { "region": "Region Y", "cost": 10, "outage": 6 },
+                  { "region": "Region Z", "cost": 15, "outage": 2 }
+                ]
+              },
+              {
+                "id": "v3",
+                "type": "table",
+                "title": "Table 1: Web vs API Traffic Ratio & Discount Rate",
+                "note": "Discount is applied on gross traffic cost before adding SLA penalty.",
+                "headers": ["Region", "Web : API Traffic", "Discount on Gross Cost"],
+                "rows": [
+                  ["Region X", "$4 : 3$", "$10\\%$"],
+                  ["Region Y", "$5 : 4$", "$20\\%$"],
+                  ["Region Z", "$3 : 2$", "$15\\%$"]
+                ]
+              }
+            ]
+          }
+        ],
+        "questions": [
+          {
+            "id": "sec_1_q_1",
+            "contextId": "sec_1_ctx_1",
+            "type": "NAT",
+            "marks": { "correct": 3, "wrong": 0, "partial": 0 },
+            "prompt": "Find the net amount payable (in ₹ Lakh) for **API Traffic** in **Region X** after applying the discount and adding $50\\%$ of Region X's total SLA penalty.",
+            "visuals": [],
+            "options": [],
+            "answer": [129.9, 129.9],
+            "explanation": "1. **Total Traffic in Region X:** $35\\% \\text{ of } 8000 = 2800\\text{ TB}$.\n2. **API Traffic in Region X:** $\\frac{3}{4+3} \\times 2800 = 1200\\text{ TB}$.\n3. **Gross Cost:** $1200 \\times ₹12,000 = ₹144\\text{ Lakh}$.\n4. **After 10% Discount:** $144 \\times 0.90 = ₹129.6\\text{ Lakh}$.\n5. **50% of SLA Penalty:** $0.5 \\times (4 \\times ₹15,000) = ₹0.3\\text{ Lakh}$.\n6. **Net Amount Payable:** $129.6 + 0.3 = ₹129.9\\text{ Lakh}$.",
+            "explanationVisuals": []
+          },
+          {
+            "id": "sec_1_q_2",
+            "contextId": "sec_1_ctx_1",
+            "type": "MCQ",
+            "marks": { "correct": 2, "wrong": -0.5, "partial": 0 },
+            "prompt": "In **Region Y**, what is the difference (in TB) between **Web Traffic** and **API Traffic**?",
+            "visuals": [],
+            "options": [
+              { "id": "A", "text": "$300\\text{ TB}$", "visual": null },
+              { "id": "B", "text": "$350\\text{ TB}$", "visual": null },
+              { "id": "C", "text": "$400\\text{ TB}$", "visual": null },
+              { "id": "D", "text": "$450\\text{ TB}$", "visual": null },
+              { "id": "E", "text": "None of these", "visual": null }
+            ],
+            "answer": "C",
+            "explanation": "Total Traffic in Region Y $= 45\\% \\text{ of } 8000 = 3600\\text{ TB}$.\nRatio of Web to API $= 5 : 4$.\nDifference $= \\frac{5 - 4}{5 + 4} \\times 3600 = \\frac{1}{9} \\times 3600 = 400\\text{ TB}$.",
+            "explanationVisuals": []
+          },
+          {
+            "id": "sec_1_q_3",
+            "contextId": null,
+            "type": "MCQ",
+            "marks": { "correct": 3, "wrong": -1, "partial": 0 },
+            "prompt": "A logic circuit (Figure 1) and its state transition flow (Figure 2) are shown below. Identify the output $Y$ and next state when $A=1, B=0$ starting from $S_0$.",
+            "visuals": [
+              {
+                "id": "v1",
+                "type": "svg",
+                "title": "Figure 1: Combinational Front-End",
+                "note": "All logic gates are ideal.",
+                "data": "<svg viewBox='0 0 320 120' xmlns='http://www.w3.org/2000/svg'><line x1='20' y1='40' x2='90' y2='40' stroke='#0f172a' stroke-width='2'/><text x='10' y='44' font-size='12'>A</text><line x1='20' y1='80' x2='90' y2='80' stroke='#0f172a' stroke-width='2'/><text x='10' y='84' font-size='12'>B</text><path d='M90,25 L130,25 A35,35 0 0,1 130,95 L90,95 Z' fill='#e0f2fe' stroke='#0284c7' stroke-width='2'/><text x='110' y='65' font-size='12'>AND</text><line x1='165' y1='60' x2='240' y2='60' stroke='#0f172a' stroke-width='2'/><text x='246' y='64' font-size='12'>Y = A.B</text></svg>"
+              },
+              {
+                "id": "v2",
+                "type": "mermaid",
+                "title": "Figure 2: Downstream Controller State",
+                "note": "Transition occurs on rising clock edge.",
+                "data": "stateDiagram-v2\n direction LR\n S0 --> S1 : Y = 1\n S0 --> S0 : Y = 0"
+              }
+            ],
+            "options": [
+              { "id": "A", "text": "$Y = 0$, Controller stays in $S_0$", "visual": null },
+              { "id": "B", "text": "$Y = 1$, Controller moves to $S_1$", "visual": null },
+              { "id": "C", "text": "$Y = 1$, Controller stays in $S_0$", "visual": null },
+              { "id": "D", "text": "$Y = 0$, Controller moves to $S_1$", "visual": null }
+            ],
+            "answer": "A",
+            "explanation": "Since $A=1$ and $B=0$, the output is $Y = A \\cdot B = 1 \\cdot 0 = 0$. From Figure 2, when $Y=0$, the controller stays in $S_0$.",
+            "explanationVisuals": []
+          },
+          {
+            "id": "sec_1_q_4",
+            "contextId": null,
+            "type": "MSQ",
+            "marks": { "correct": 4, "wrong": -2, "partial": 1 },
+            "prompt": "Match the asymptotic growth claims in the table below and select **all** options that are mathematically true.",
+            "visuals": [
+              {
+                "id": "v1",
+                "type": "table",
+                "title": "Function Growth Claims",
+                "note": null,
+                "headers": ["Item", "Function", "Claimed Bound"],
+                "rows": [
+                  ["P", "$f(n) = 3n^2 + 5n$", "$O(n^2)$"],
+                  ["Q", "$f(n) = 2^{n+1}$", "$O(2^n)$"],
+                  ["R", "$f(n) = n!$", "$O(2^n)$"]
+                ]
+              }
+            ],
+            "options": [
+              { "id": "A", "text": "Item P is true for all $n \\ge 1$.", "visual": null },
+              { "id": "B", "text": "Item Q is false because $2^{n+1}$ grows faster than $2^n$.", "visual": null },
+              { "id": "C", "text": "Item Q is true with constant $c = 2$.", "visual": null },
+              { "id": "D", "text": "Item R is true for all $n \\ge 4$.", "visual": null }
+            ],
+            "answer": ["A", "C"],
+            "explanation": "Item P holds since $3n^2 + 5n \\le 8n^2$ ($n \\ge 1$). Item Q holds since $2^{n+1} = 2 \\cdot 2^n$. Item R is false since $n!$ grows faster than $2^n$. Thus A and C are correct.",
+            "explanationVisuals": []
+          }
+        ]
+      }
+    ]
+  }
+]
+________________________________________
+Pillar 3: Universal WebApp Renderer & Grading Engine
+Lean, single-file React/TypeScript engine handling all visual types, 4/5/N options, NAT virtual keypad, maxAttempts locks, and exact grading.
+Tsx
+"use client";
+
+import React, { useEffect, useId, useRef, useState } from "react";
+import {
+  ResponsiveContainer, ComposedChart, Bar, Line, Scatter, PieChart, Pie, Cell,
+  XAxis, YAxis, Tooltip, Legend, CartesianGrid, RadarChart, Radar,
+  PolarGrid, PolarAngleAxis, PolarRadiusAxis
+} from "recharts";
+import katex from "katex";
+import "katex/contrib/mhchem";
+
+const COLORS = ["#2563eb", "#dc2626", "#16a34a", "#d97706", "#7c3aed", "#0891b2"];
+
+// ============================================================================
+// 1. SVG SANITIZER & DEFENSIVE LATEX + CHEMISTRY (\ce) + MARKDOWN RENDERER
+// ============================================================================
+function sanitizeSvg(raw: string): string {
+  return String(raw || "")
+    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "")
+    .replace(/<foreignObject[\s\S]*?>[\s\S]*?<\/foreignObject>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/(?:href|xlink:href)\s*=\s*(?:"\s*javascript:[^"]*"|'\s*javascript:[^']*')/gi, "");
+}
+
+export function defaultRenderLatex(input: any): React.ReactNode {
+  if (input === null || input === undefined || input === "") return null;
+  const text = String(input);
+
+  const tokens = text.split(/(\$\$[\s\S]+?\$\$|\$(?!\s)(?:[^$\n]*?[^\s$\n])?\$)/g);
+
+  return tokens.map((token, idx) => {
+    if (token.startsWith("$$") && token.endsWith("$$") && token.length > 4) {
+      const html = katex.renderToString(token.slice(2, -2), { displayMode: true, throwOnError: false });
+      return <span key={idx} className="my-2 block overflow-x-auto" dangerouslySetInnerHTML={{ __html: html }} />;
+    }
+    if (token.startsWith("$") && token.endsWith("$") && token.length > 2) {
+      const html = katex.renderToString(token.slice(1, -1), { displayMode: false, throwOnError: false });
+      return <span key={idx} dangerouslySetInnerHTML={{ __html: html }} />;
+    }
+
+    return (
+      <React.Fragment key={idx}>
+        {token.split(/(\*\*[^*]+?\*\*)/g).map((part, bIdx) => {
+          if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+            return <strong key={bIdx} className="font-semibold text-slate-900">{part.slice(2, -2)}</strong>;
+          }
+          return part.split("\n").map((line, lIdx, arr) => (
+            <React.Fragment key={`${bIdx}-${lIdx}`}>
+              {line}
+              {lIdx < arr.length - 1 && <br />}
+            </React.Fragment>
+          ));
+        })}
+      </React.Fragment>
+    );
+  });
+}
+
+// ============================================================================
+// 2. CLIENT DIAGRAM MOUNT FOR MERMAID.JS & SMILES MOLECULAR STRUCTURES
+// ============================================================================
+function DeclarativeDiagramMount({ type, data }: { type: "smiles" | "mermaid"; data: string }) {
+  const safeId = useId().replace(/[^a-zA-Z0-9_-]/g, "_");
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [mermaidSvg, setMermaidSvg] = useState<string>("");
+  const [smilesError, setSmilesError] = useState<boolean>(false);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    if (type === "mermaid" && data) {
+      import("mermaid").then(async (m) => {
+        const mermaid = m.default;
+        mermaid.initialize({ startOnLoad: false, theme: "neutral", securityLevel: "strict" });
+        try {
+          const { svg } = await mermaid.render(`mermaid_${safeId}`, String(data));
+          if (isMounted) setMermaidSvg(sanitizeSvg(svg));
+        } catch {
+          if (isMounted) setMermaidSvg("");
+        }
+      });
+    } else if (type === "smiles" && data && svgRef.current) {
+      setSmilesError(false);
+      svgRef.current.innerHTML = "";
+      import("smiles-drawer")
+        .then((SmilesDrawerModule: any) => {
+          const SmilesDrawer = SmilesDrawerModule.default || SmilesDrawerModule;
+          const drawer = new SmilesDrawer.SvgDrawer({ width: 280, height: 180 });
+          SmilesDrawer.parse(
+            String(data),
+            (tree: any) => {
+              if (isMounted && svgRef.current) {
+                svgRef.current.innerHTML = "";
+                drawer.draw(tree, svgRef.current, "light");
+              }
+            },
+            () => {
+              if (isMounted) setSmilesError(true);
+            }
+          );
+        })
+        .catch(() => {
+          if (isMounted) setSmilesError(true);
+        });
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [type, data, safeId]);
+
+  if (type === "mermaid") {
+    return mermaidSvg ? (
+      <div className="flex justify-center overflow-x-auto py-2" dangerouslySetInnerHTML={{ __html: mermaidSvg }} />
+    ) : (
+      <pre className="overflow-x-auto rounded bg-slate-50 p-2 text-xs text-slate-600">{data}</pre>
+    );
+  }
+
+  if (smilesError) {
+    return <code className="block rounded bg-slate-50 p-2 text-xs text-slate-700">{data}</code>;
+  }
+
+  return (
+    <div className="flex justify-center overflow-x-auto py-2">
+      <svg ref={svgRef} viewBox="0 0 280 180" className="max-h-48 w-auto" />
+    </div>
+  );
+}
+
+// ============================================================================
+// 3. SINGLE VISUAL CARD (Chart, Table, SVG, SMILES, Mermaid)
+// ============================================================================
+export function SingleVisualCard({
+  visual,
+  renderLatex = defaultRenderLatex,
+}: {
+  visual: any;
+  renderLatex?: (txt: any) => React.ReactNode;
+}) {
+  if (!visual || typeof visual !== "object") return null;
+
+  const isNumericScatterX =
+    visual.type === "chart" &&
+    visual.chartType === "scatter" &&
+    typeof visual.data?.[0]?.[visual.xAxisKey] === "number";
+
+  return (
+    <div className="my-3 min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      {visual.title && (
+        <h4 className="mb-3 border-b pb-2 text-sm font-bold text-slate-800">
+          {renderLatex(visual.title)}
+        </h4>
+      )}
+
+      {visual.type === "chart" && Array.isArray(visual.data) && (
+        <div className="h-72 w-full min-w-0">
+          <ResponsiveContainer width="100%" height="100%">
+            {visual.chartType === "pie" ? (
+              <PieChart>
+                <Pie
+                  data={visual.data}
+                  dataKey={visual.series?.[0]?.key || "value"}
+                  nameKey={visual.xAxisKey || "name"}
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={90}
+                  label
+                >
+                  {visual.data.map((_: any, i: number) => (
+                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            ) : visual.chartType === "radar" ? (
+              <RadarChart data={visual.data}>
+                <PolarGrid />
+                <PolarAngleAxis dataKey={visual.xAxisKey} />
+                <PolarRadiusAxis />
+                {(visual.series || []).map((s: any, i: number) => (
+                  <Radar
+                    key={s.key || i}
+                    name={s.label || s.key}
+                    dataKey={s.key}
+                    stroke={COLORS[i % COLORS.length]}
+                    fill={COLORS[i % COLORS.length]}
+                    fillOpacity={0.3}
+                  />
+                ))}
+                <Legend />
+                <Tooltip />
+              </RadarChart>
+            ) : (
+              <ComposedChart data={visual.data}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey={visual.xAxisKey} type={isNumericScatterX ? "number" : "category"} />
+                <YAxis yAxisId="left" orientation="left" />
+                {(visual.series || []).some((s: any) => s.yAxis === "right") && (
+                  <YAxis yAxisId="right" orientation="right" />
+                )}
+                <Tooltip />
+                <Legend />
+                {(visual.series || []).map((s: any, i: number) => {
+                  const yAxisId = s.yAxis || "left";
+                  const color = COLORS[i % COLORS.length];
+                  const isScatter = visual.chartType === "scatter" || s.type === "scatter";
+                  const isLine = visual.chartType === "line" || s.type === "line";
+
+                  if (isScatter) {
+                    return <Scatter key={s.key || i} yAxisId={yAxisId} name={s.label} dataKey={s.key} fill={color} />;
+                  }
+                  if (isLine) {
+                    return (
+                      <Line
+                        key={s.key || i}
+                        yAxisId={yAxisId}
+                        type="monotone"
+                        dataKey={s.key}
+                        name={s.label}
+                        stroke={color}
+                        strokeWidth={2.5}
+                      />
+                    );
+                  }
+                  return (
+                    <Bar
+                      key={s.key || i}
+                      yAxisId={yAxisId}
+                      dataKey={s.key}
+                      name={s.label}
+                      stackId={visual.chartType === "stacked_bar" ? "stack" : undefined}
+                      fill={color}
+                    />
+                  );
+                })}
+              </ComposedChart>
+            )}
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {visual.type === "table" && (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-left text-sm">
+            {Array.isArray(visual.headers) && visual.headers.length > 0 && (
+              <thead>
+                <tr className="bg-slate-100">
+                  {visual.headers.map((h: any, i: number) => (
+                    <th key={i} className="border border-slate-300 px-3 py-2 font-semibold text-slate-800">
+                      {renderLatex(h)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+            )}
+            <tbody>
+              {(visual.rows || []).map((row: any[], rIdx: number) => (
+                <tr key={rIdx} className="even:bg-slate-50">
+                  {(row || []).map((cell: any, cIdx: number) => (
+                    <td key={cIdx} className="border border-slate-300 px-3 py-2 text-slate-700">
+                      {renderLatex(cell)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {visual.type === "svg" && visual.data && (
+        <div
+          className="flex justify-center overflow-x-auto py-2 [&>svg]:max-h-72 [&>svg]:w-auto"
+          dangerouslySetInnerHTML={{ __html: sanitizeSvg(visual.data) }}
+        />
+      )}
+
+      {(visual.type === "smiles" || visual.type === "mermaid") && visual.data && (
+        <DeclarativeDiagramMount type={visual.type} data={String(visual.data)} />
+      )}
+
+      {visual.note && (
+        <div className="mt-3 rounded border-l-4 border-amber-400 bg-amber-50/70 px-3 py-2 text-xs text-slate-700">
+          {renderLatex(visual.note)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// 4. MULTI-VISUAL CONTENT BLOCK (Supports Sequential or Interleaved {{v1}})
+// ============================================================================
+export function MultiVisualContentBlock({
+  text,
+  visuals = [],
+  renderLatex = defaultRenderLatex,
+}: {
+  text?: string | null;
+  visuals?: any[] | null;
+  renderLatex?: (txt: any) => React.ReactNode;
+}) {
+  const safeVisuals = Array.isArray(visuals) ? visuals : [];
+  const renderedIds = new Set<string>();
+  const parts = text ? String(text).split(/(\{\{[a-zA-Z0-9_-]+\}\})/g) : [];
+
+  return (
+    <div className="space-y-3">
+      {parts.map((part, idx) => {
+        const match = part.match(/^\{\{([a-zA-Z0-9_-]+)\}\}$/);
+        if (match) {
+          const target = safeVisuals.find((v) => v && v.id === match[1]);
+          if (target) {
+            renderedIds.add(target.id);
+            return <SingleVisualCard key={idx} visual={target} renderLatex={renderLatex} />;
+          }
+        }
+        return part ? (
+          <div key={idx} className="leading-relaxed text-slate-800">
+            {renderLatex(part)}
+          </div>
+        ) : null;
+      })}
+
+      {safeVisuals
+        .filter((v) => v && !renderedIds.has(v.id))
+        .map((v, idx) => (
+          <SingleVisualCard key={v.id || idx} visual={v} renderLatex={renderLatex} />
+        ))}
+    </div>
+  );
+}
+
+// ============================================================================
+// 5. UNIFIED ATTEMPT CHECKER, OPTIONS & NAT INPUT
+// ============================================================================
+export function isQuestionAttempted(question: { type: string }, rawAnswer: any): boolean {
+  if (rawAnswer === null || rawAnswer === undefined) return false;
+  if (question.type === "MSQ") {
+    return Array.isArray(rawAnswer) && rawAnswer.some((v) => String(v).trim() !== "");
+  }
+  const str = String(rawAnswer).trim();
+  if (str === "" || (question.type === "NAT" && (str === "-" || str === "." || str === "-."))) {
+    return false;
+  }
+  return question.type === "NAT" ? Number.isFinite(Number(str)) : true;
+}
+
+export function QuestionResponseBlock({
+  question,
+  userAnswer,
+  onChange,
+  isAttemptCapReached = false,
+  showVirtualKeypad = true,
+  renderLatex = defaultRenderLatex,
+}: {
+  question: any;
+  userAnswer: any;
+  onChange: (val: any) => void;
+  isAttemptCapReached?: boolean;
+  showVirtualKeypad?: boolean;
+  renderLatex?: (txt: any) => React.ReactNode;
+}) {
+  const hasExistingAnswer =
+    isQuestionAttempted(question, userAnswer) ||
+    (userAnswer !== null && userAnswer !== undefined && String(userAnswer) !== "" && !Array.isArray(userAnswer));
+
+  const isLockedByCap = isAttemptCapReached && !hasExistingAnswer;
+
+  if (question.type === "NAT") {
+    const valStr = userAnswer !== null && userAnswer !== undefined ? String(userAnswer) : "";
+
+    const handleNumericInput = (next: string) => {
+      if (isLockedByCap) return;
+      if (next === "" || /^-?\d*\.?\d*$/.test(next)) {
+        onChange(next);
+      }
+    };
+
+    const handleKeyPress = (key: string) => {
+      if (isLockedByCap) return;
+      if (key === "CLEAR") return onChange("");
+      if (key === "BACKSPACE") return onChange(valStr.slice(0, -1));
+      if (key === "-") return onChange(valStr.startsWith("-") ? valStr.slice(1) : "-" + valStr);
+      if (key === "." && valStr.includes(".")) return;
+      handleNumericInput(valStr + key);
+    };
+
+    return (
+      <div className="mt-4 space-y-3">
+        {isLockedByCap && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs font-medium text-amber-800">
+            Maximum attempt limit reached for this section. Clear an existing response in this section first.
+          </div>
+        )}
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Enter Numerical Answer:
+          </label>
+          <input
+            type="text"
+            inputMode="decimal"
+            disabled={isLockedByCap}
+            value={valStr}
+            onChange={(e) => handleNumericInput(e.target.value)}
+            placeholder="Type numerical answer"
+            className="w-64 rounded-lg border border-slate-300 px-3 py-2 text-base font-semibold text-slate-900 focus:border-blue-600 focus:outline-none disabled:bg-slate-100"
+          />
+        </div>
+
+        {showVirtualKeypad && !isLockedByCap && (
+          <div className="inline-grid grid-cols-4 gap-1.5 rounded-xl border border-slate-200 bg-slate-50 p-2.5">
+            {["7", "8", "9", "BACKSPACE", "4", "5", "6", "-", "1", "2", "3", ".", "0", "CLEAR"].map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => handleKeyPress(k)}
+                className={`rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-100 ${
+                  k === "CLEAR" || k === "BACKSPACE" ? "col-span-2 text-red-600" : ""
+                }`}
+              >
+                {k === "BACKSPACE" ? "⌫" : k}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const isMSQ = question.type === "MSQ";
+  const selectedArray: string[] = Array.isArray(userAnswer) ? userAnswer : [];
+  const optionsList = Array.isArray(question.options) ? question.options : [];
+
+  return (
+    <div className="mt-4 space-y-2.5">
+      {isLockedByCap && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs font-medium text-amber-800">
+          Maximum attempt limit reached for this section. Clear an existing response in this section first.
+        </div>
+      )}
+
+      {optionsList.map((opt: any) => {
+        const isSelected = isMSQ ? selectedArray.includes(opt.id) : userAnswer === opt.id;
+
+        const handleSelect = () => {
+          if (isLockedByCap) return;
+          if (!isMSQ) {
+            onChange(isSelected ? null : opt.id);
+          } else {
+            const next = isSelected
+              ? selectedArray.filter((id) => id !== opt.id)
+              : Array.from(new Set([...selectedArray, opt.id])).sort();
+            onChange(next);
+          }
+        };
+
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            disabled={isLockedByCap}
+            onClick={handleSelect}
+            className={`flex w-full items-start gap-3 rounded-xl border p-3.5 text-left transition ${
+              isSelected
+                ? "border-blue-600 bg-blue-50/70 ring-1 ring-blue-600"
+                : "border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-60"
+            }`}
+          >
+            <span
+              className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border text-xs font-bold ${
+                isSelected ? "border-blue-600 bg-blue-600 text-white" : "border-slate-300 text-slate-600"
+              }`}
+            >
+              {opt.id}
+            </span>
+            <div className="flex-1 space-y-2">
+              {opt.text && <div className="text-sm text-slate-800">{renderLatex(opt.text)}</div>}
+              {opt.visual && <SingleVisualCard visual={opt.visual} renderLatex={renderLatex} />}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================================
+// 6. UNIVERSAL QUESTION & FULL-EXAM GRADING ENGINE
+// ============================================================================
+export function evaluateQuestion(
+  question: {
+    type: "MCQ" | "MSQ" | "NAT";
+    marks: { correct: number; wrong: number; partial?: number };
+    answer: string | string[] | [number, number];
+  },
+  userAnswer: any
+): { status: "UNATTEMPTED" | "CORRECT" | "PARTIAL" | "WRONG"; marksAwarded: number } {
+  const { type, marks, answer } = question;
+  const correctMarks = Number(marks?.correct ?? 1);
+  const wrongPenalty = -Math.abs(Number(marks?.wrong ?? 0));
+
+  if (!isQuestionAttempted(question, userAnswer)) {
+    return { status: "UNATTEMPTED", marksAwarded: 0 };
+  }
+
+  if (type === "MCQ") {
+    const isCorrect = String(userAnswer).trim() === String(answer).trim();
+    return {
+      status: isCorrect ? "CORRECT" : "WRONG",
+      marksAwarded: isCorrect ? correctMarks : wrongPenalty,
+    };
+  }
+
+  if (type === "NAT") {
+    const num = Number(String(userAnswer).trim());
+    if (!Number.isFinite(num) || !Array.isArray(answer) || answer.length < 2) {
+      return { status: "WRONG", marksAwarded: wrongPenalty };
+    }
+    const min = Math.min(Number(answer[0]), Number(answer[1]));
+    const max = Math.max(Number(answer[0]), Number(answer[1]));
+    const isCorrect = num >= min - 1e-6 && num <= max + 1e-6;
+    return {
+      status: isCorrect ? "CORRECT" : "WRONG",
+      marksAwarded: isCorrect ? correctMarks : wrongPenalty,
+    };
+  }
+
+  if (type === "MSQ") {
+    const correctSet = new Set((Array.isArray(answer) ? answer : []).map((v) => String(v).trim()).filter(Boolean));
+    const userSet = new Set((Array.isArray(userAnswer) ? userAnswer : []).map((v) => String(v).trim()).filter(Boolean));
+
+    if (correctSet.size === 0 || userSet.size === 0) {
+      return { status: "UNATTEMPTED", marksAwarded: 0 };
+    }
+
+    for (const opt of userSet) {
+      if (!correctSet.has(opt)) {
+        return { status: "WRONG", marksAwarded: wrongPenalty };
+      }
+    }
+
+    if (userSet.size === correctSet.size) {
+      return { status: "CORRECT", marksAwarded: correctMarks };
+    }
+
+    const partialRate = Number(marks?.partial ?? 0);
+    if (partialRate > 0) {
+      return {
+        status: "PARTIAL",
+        marksAwarded: Math.min(userSet.size * partialRate, correctMarks),
+      };
+    }
+
+    return { status: "WRONG", marksAwarded: wrongPenalty };
+  }
+
+  return { status: "UNATTEMPTED", marksAwarded: 0 };
+}
+
+export function evaluateFullExam(
+  exam: any,
+  userResponses: Record<string, any>
+) {
+  let totalScore = 0;
+  const sectionResults: Record<string, { score: number; attempted: number }> = {};
+  const questionResults: Record<string, any> = {};
+
+  for (const section of exam.sections || []) {
+    let sectionScore = 0;
+    let attemptedCount = 0;
+    const maxAttempts = section.maxAttempts ? Number(section.maxAttempts) : null;
+
+    for (const q of section.questions || []) {
+      const rawAnswer = userResponses[q.id];
+      const attempted = isQuestionAttempted(q, rawAnswer);
+
+      if (attempted && maxAttempts !== null && attemptedCount >= maxAttempts) {
+        questionResults[q.id] = { status: "UNATTEMPTED", marksAwarded: 0, ignoredByCap: true };
+        continue;
+      }
+
+      if (attempted) attemptedCount++;
+
+      const res = evaluateQuestion(q, rawAnswer);
+      questionResults[q.id] = res;
+      sectionScore += res.marksAwarded;
+    }
+
+    sectionResults[section.id] = {
+      score: Number(sectionScore.toFixed(2)),
+      attempted: attemptedCount,
+    };
+    totalScore += sectionScore;
+  }
+
+  return {
+    totalScore: Number(totalScore.toFixed(2)),
+    sectionResults,
+    questionResults,
+  };
+}
+
