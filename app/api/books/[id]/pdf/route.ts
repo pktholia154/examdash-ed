@@ -67,7 +67,7 @@ export async function GET(
 
       targetUrl = resolveFirebaseStorageUrl(bookPaths.fullPdfStoragePath);
       const hasEmbeddedDownloadToken = /[?&]token=[^&]+/i.test(targetUrl);
-      if (!verifiedUser.isReviewerSession && !hasEmbeddedDownloadToken) {
+      if (!hasEmbeddedDownloadToken) {
         upstreamHeaders.Authorization = `Firebase ${token}`;
       }
     }

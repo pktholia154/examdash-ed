@@ -404,7 +404,10 @@ export function MarkdownReaderModal({
     if (e.touches.length === 2) {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
-      pinchStartDistRef.current = Math.hypot(dx, dy);
+      const dist = Math.hypot(dx, dy);
+      pinchStartDistRef.current = dist >= 30 ? dist : null;
+    } else {
+      pinchStartDistRef.current = null;
     }
   }, []);
 
@@ -415,13 +418,13 @@ export function MarkdownReaderModal({
         const dy = e.touches[0].clientY - e.touches[1].clientY;
         const dist = Math.hypot(dx, dy);
         const delta = dist - pinchStartDistRef.current;
-        if (Math.abs(delta) > 36) {
+        if (Math.abs(delta) > 48) {
           pinchStartDistRef.current = dist;
           const stepDir = delta > 0 ? 1 : -1;
           if (pinchDebounceRef.current !== null) window.clearTimeout(pinchDebounceRef.current);
           pinchDebounceRef.current = window.setTimeout(() => {
             applyReflowZoom(stepMarkdownScale(mdScale, stepDir));
-          }, 90);
+          }, 120);
         }
       }
     },
@@ -493,35 +496,38 @@ export function MarkdownReaderModal({
     >
       {/* Top Minimal HUD */}
       <header
-        className="flex items-center justify-between gap-2 border-b px-3 py-2 safe-top sm:px-5"
+        className="relative flex items-center justify-between gap-2 border-b px-2.5 py-2 safe-top sm:px-5"
         style={{ borderColor: 'var(--md-border)', backgroundColor: 'var(--md-bg)' }}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <button
             type="button"
             onClick={() => setTocOpen((v) => !v)}
             aria-label="Toggle table of contents"
             aria-expanded={tocOpen}
-            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border transition-colors hover:opacity-80"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-colors hover:opacity-80 sm:h-10 sm:w-10"
             style={{ borderColor: 'var(--md-border)' }}
           >
             <List className="h-4 w-4" aria-hidden="true" />
           </button>
 
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--md-muted)' }}>
-              <span className="font-semibold" style={{ color: 'var(--md-fg)' }}>
+          <div className="min-w-0 flex-1">
+            <div
+              className="hidden items-center gap-2 text-xs sm:flex"
+              style={{ color: 'var(--md-muted)' }}
+            >
+              <span className="font-semibold whitespace-nowrap" style={{ color: 'var(--md-fg)' }}>
                 {mode === 'sample' ? 'Free Sample Markdown' : 'Full Markdown Edition'}
               </span>
               <span aria-hidden="true">·</span>
-              <span className="font-mono-tabular">{progressPercent}% read</span>
+              <span className="font-mono-tabular whitespace-nowrap">{progressPercent}% read</span>
             </div>
             <p className="truncate text-sm font-semibold">{bookTitle}</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
-          {/* Reflowable Zoom Controls: A-, 100%, A+ */}
+        <div className="flex items-center gap-1 shrink-0 sm:gap-1.5">
+          {/* Reflowable Zoom Controls: compact A-/A+ on mobile, A-/100%/A+ on sm+ */}
           <div
             role="group"
             aria-label="Text zoom controls"
@@ -532,7 +538,7 @@ export function MarkdownReaderModal({
               type="button"
               onClick={() => applyReflowZoom(stepMarkdownScale(mdScale, -1))}
               aria-label="Decrease text size"
-              className="inline-flex h-9 min-w-[36px] items-center justify-center px-2 text-xs font-semibold hover:opacity-80"
+              className="inline-flex h-9 min-w-[34px] items-center justify-center px-2 text-xs font-semibold hover:opacity-80 sm:min-w-[36px]"
             >
               A-
             </button>
@@ -540,7 +546,7 @@ export function MarkdownReaderModal({
               type="button"
               onClick={() => applyReflowZoom(1.0)}
               aria-label="Reset text size to 100%"
-              className="font-mono-tabular h-9 border-x px-2 text-xs font-medium whitespace-nowrap"
+              className="font-mono-tabular hidden h-9 border-x px-2 text-xs font-medium whitespace-nowrap sm:inline-flex sm:items-center sm:justify-center"
               style={{ borderColor: 'var(--md-border)' }}
             >
               {Math.round(mdScale * 100)}%
@@ -549,7 +555,8 @@ export function MarkdownReaderModal({
               type="button"
               onClick={() => applyReflowZoom(stepMarkdownScale(mdScale, 1))}
               aria-label="Increase text size"
-              className="inline-flex h-9 min-w-[36px] items-center justify-center px-2 text-xs font-semibold hover:opacity-80"
+              className="inline-flex h-9 min-w-[34px] items-center justify-center border-l px-2 text-xs font-semibold hover:opacity-80 sm:min-w-[36px] sm:border-l-0"
+              style={{ borderColor: 'var(--md-border)' }}
             >
               A+
             </button>
@@ -637,7 +644,7 @@ export function MarkdownReaderModal({
               onClick={() => void toggleOfflineSave()}
               disabled={offlineBusy}
               aria-label={offlineSaved ? 'Remove offline markdown' : 'Save markdown offline'}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap hover:opacity-80 disabled:opacity-50"
+              className="inline-flex h-9 w-9 items-center justify-center gap-1.5 rounded-lg border text-xs font-medium whitespace-nowrap hover:opacity-80 disabled:opacity-50 md:w-auto md:px-2.5"
               style={{ borderColor: 'var(--md-border)' }}
             >
               {offlineSaved ? (
@@ -671,10 +678,25 @@ export function MarkdownReaderModal({
             type="button"
             onClick={onClose}
             aria-label="Close Markdown reader"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-lg hover:opacity-75"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg hover:opacity-75 sm:h-10 sm:w-10"
           >
             <X className="h-5 w-5" aria-hidden="true" />
           </button>
+        </div>
+
+        {/* Hairline reading progress bar along bottom edge (compact visual cue on mobile) */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] opacity-35"
+          style={{ backgroundColor: 'var(--md-border)' }}
+        >
+          <div
+            className="h-full transition-[width] duration-150"
+            style={{
+              width: `${progressPercent}%`,
+              backgroundColor: 'var(--md-fg)',
+            }}
+          />
         </div>
       </header>
 

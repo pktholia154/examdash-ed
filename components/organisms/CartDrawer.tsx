@@ -257,25 +257,13 @@ export function CartDrawer({
                 )}
               </button>
             ) : (
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  onClick={onSignIn}
-                  className="min-h-[44px] w-full rounded-lg bg-[var(--brand-ink)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--brand-ink-hover)]"
-                >
-                  Sign in with Google to Pay via Razorpay
-                </button>
-                <div className="text-center">
-                  <Link
-                    href="/login?redirect=/"
-                    rel="nofollow"
-                    onClick={onClose}
-                    className="text-xs text-[var(--text-muted)] underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:underline"
-                  >
-                    Partner / verification email sign-in
-                  </Link>
-                </div>
-              </div>
+              <button
+                type="button"
+                onClick={onSignIn}
+                className="min-h-[44px] w-full rounded-lg bg-[var(--brand-ink)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--brand-ink-hover)]"
+              >
+                Sign in with Google to Pay via Razorpay
+              </button>
             )}
 
             <div className="flex flex-col items-center gap-1 pt-0.5 text-center text-[11px] text-[var(--text-muted)]">

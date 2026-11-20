@@ -302,16 +302,22 @@ test('sumOrderSubunits aggregates line totals accurately', () => {
   assert.equal(paise, 50000);
 });
 
-test('getRazorpayServerConfig reads runtime env vars including NEXT_PUBLIC_RAZORPAY_KEY_ID and strips quotes', async () => {
+test('getRazorpayServerConfig reads runtime env vars including NEXT_PUBLIC_RAZORPAY_KEY_ID and strips quotes/newlines', async () => {
   const { getRazorpayConfigDiagnostics, getRazorpayServerConfig } = await import('./razorpay');
   const keys = [
     'RAZORPAY_KEY_ID',
     'NEXT_PUBLIC_RAZORPAY_KEY_ID',
+    'RAZORPAY_LIVE_KEY_ID',
     'RAZORPAY_KEY',
     'NEXT_PUBLIC_RAZORPAY_KEY',
+    'RZP_KEY_ID',
     'RAZORPAY_KEY_SECRET',
+    'RAZORPAY_LIVE_KEY_SECRET',
     'RAZORPAY_SECRET',
+    'RZP_KEY_SECRET',
     'RAZORPAY_WEBHOOK_SECRET',
+    'razorpay_key_id',
+    'razorpay_key_secret',
   ] as const;
   const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
 
@@ -323,18 +329,31 @@ test('getRazorpayServerConfig reads runtime env vars including NEXT_PUBLIC_RAZOR
       hasKeyId: false,
       hasKeySecret: false,
       mode: 'unknown',
+      detectedEnvKeys: [],
     });
 
-    // Supports NEXT_PUBLIC_RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET with accidental quotes
-    process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID = '"rzp_live_ABC123"';
-    process.env.RAZORPAY_KEY_SECRET = "'secret_xyz_999'";
+    // Supports NEXT_PUBLIC_RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET with accidental quotes & trailing newline
+    process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID = '"rzp_live_ABC123"\n';
+    process.env.RAZORPAY_KEY_SECRET = " 'secret_xyz_999'\r\n";
     const liveCfg = getRazorpayServerConfig();
     assert.ok(liveCfg);
     assert.equal(liveCfg.keyId, 'rzp_live_ABC123');
     assert.equal(liveCfg.keySecret, 'secret_xyz_999');
     assert.equal(liveCfg.mode, 'live');
 
+    // Supports case-insensitive fallback keys
+    delete process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID;
+    delete process.env.RAZORPAY_KEY_SECRET;
+    process.env.razorpay_key_id = 'rzp_live_CASE999';
+    process.env.razorpay_key_secret = 'secret_case_999';
+    const caseCfg = getRazorpayServerConfig();
+    assert.ok(caseCfg);
+    assert.equal(caseCfg.keyId, 'rzp_live_CASE999');
+    assert.equal(caseCfg.keySecret, 'secret_case_999');
+
     // Rejects template placeholders from .env.example
+    delete process.env.razorpay_key_id;
+    delete process.env.razorpay_key_secret;
     process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID = 'MY_RAZORPAY_KEY_ID';
     process.env.RAZORPAY_KEY_SECRET = 'MY_RAZORPAY_KEY_SECRET';
     assert.equal(getRazorpayServerConfig(), null);

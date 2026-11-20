@@ -12,6 +12,7 @@ import { fulfillVerifiedRazorpayOrder } from '@/core/payments/fulfillment';
 import { extractBearerToken, verifyFirebaseIdToken } from '@/lib/firebase/server-auth';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 /**
  * Picks the highest-priority actionable payment for an order:

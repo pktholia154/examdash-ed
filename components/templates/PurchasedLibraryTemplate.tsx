@@ -451,13 +451,6 @@ export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTempl
               <LogIn className="h-4 w-4 shrink-0" aria-hidden="true" />
               <span>{authBusy ? 'Signing in...' : 'Sign in with Google'}</span>
             </button>
-            <Link
-              href="/login?redirect=/purchased"
-              rel="nofollow"
-              className="mt-3 text-xs text-[var(--text-muted)] underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:underline"
-            >
-              Partner / verification email sign-in
-            </Link>
           </section>
         )}
 

@@ -19,6 +19,7 @@ import { extractBearerToken, verifyFirebaseIdToken } from '@/lib/firebase/server
 import { fetchPublishedBooks, fetchPublishedExams } from '@/lib/firebase/server-catalog';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
@@ -33,6 +34,7 @@ export async function POST(req: NextRequest) {
           scope: 'razorpay.order.unconfigured',
           hasKeyId: diag.hasKeyId,
           hasKeySecret: diag.hasKeySecret,
+          detectedEnvKeys: diag.detectedEnvKeys,
         })
       );
       return NextResponse.json(

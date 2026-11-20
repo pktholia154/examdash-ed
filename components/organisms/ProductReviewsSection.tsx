@@ -95,10 +95,9 @@ export function ProductReviewsSection({
   }>(() => ({ uid: null, ids: new Set() }));
   const [voteBusyId, setVoteBusyId] = useState<string | null>(null);
 
-  const isFirebaseGoogleUser = Boolean(user && user.authProvider === 'firebase-google');
-  const isReviewerTestAccount = Boolean(user && user.authProvider === 'reviewer-test');
+  const isFirebaseGoogleUser = Boolean(user);
   const userOwnsProduct = isPurchased(contentType, itemId);
-  const currentUid = isFirebaseGoogleUser && user ? user.uid : null;
+  const currentUid = user ? user.uid : null;
 
   const votedIds: ReadonlySet<string> = useMemo(
     () => (currentUid && votedState.uid === currentUid ? votedState.ids : new Set()),
@@ -341,7 +340,7 @@ export function ProductReviewsSection({
           </p>
         </div>
 
-        {!isReviewerTestAccount && (summary.ratingCount > 0 || composerOpen) && (
+        {(summary.ratingCount > 0 || composerOpen) && (
           <button
             type="button"
             disabled={authBusy}
@@ -362,12 +361,6 @@ export function ProductReviewsSection({
           </button>
         )}
       </div>
-
-      {isReviewerTestAccount && (
-        <p className="rounded-lg border border-[var(--border-subtle)] px-4 py-3 text-xs text-[var(--text-secondary)]">
-          Public ratings and reviews are reserved for genuine Google-authenticated learner accounts.
-        </p>
-      )}
 
       {statusNotice && (
         <div
@@ -606,7 +599,7 @@ export function ProductReviewsSection({
             </div>
           </div>
 
-          {!composerOpen && !isReviewerTestAccount && (
+          {!composerOpen && (
             <button
               type="button"
               disabled={authBusy}
@@ -811,7 +804,7 @@ export function ProductReviewsSection({
                     </p>
 
                     <div className="flex items-center gap-3 pt-1">
-                      {!isOwn && !isReviewerTestAccount ? (
+                      {!isOwn ? (
                         <button
                           type="button"
                           disabled={voteBusyId === review.id}

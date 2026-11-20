@@ -8,6 +8,7 @@ import {
 import { captureRazorpayPayment } from '@/core/payments/razorpay-api';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 // Bounded in-memory idempotency set for webhook event replay protection within the server instance
 const MAX_TRACKED_EVENTS = 2000;

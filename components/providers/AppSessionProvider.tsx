@@ -34,20 +34,8 @@ export interface SessionUser {
   readonly email: string | null;
   readonly displayName: string | null;
   readonly photoURL: string | null;
-  readonly authProvider: 'firebase-google' | 'reviewer-test';
+  readonly authProvider: 'firebase-google';
   readonly getIdToken: (forceRefresh?: boolean) => Promise<string>;
-}
-
-interface ReviewerSessionState {
-  readonly uid: string;
-  readonly email: string;
-  readonly displayName: string;
-  readonly token: string;
-}
-
-export interface ReviewerSignInResult {
-  readonly ok: boolean;
-  readonly error?: string;
 }
 
 interface AppSessionContextValue {
@@ -72,7 +60,6 @@ interface AppSessionContextValue {
   reconcileMessage: string | null;
   clearReconcileMessage: () => void;
   signIn: () => Promise<SessionUser | null>;
-  signInWithReviewerCredentials: (identifier: string, password: string) => Promise<ReviewerSignInResult>;
   signOut: () => Promise<void>;
   addToCart: (item: PublicCatalogBaseDTO) => Promise<void>;
   removeFromCart: (cartItemId: string) => Promise<void>;
@@ -214,11 +201,6 @@ function mergePurchases(
   return Array.from(byId.values()).sort((a, b) => b.purchasedAt.localeCompare(a.purchasedAt));
 }
 
-function hasReviewerHintCookie(): boolean {
-  if (typeof document === 'undefined') return false;
-  return document.cookie.split(';').some((entry) => entry.trim() === 'ed_rs=1');
-}
-
 function readFirebaseAuthHint(): boolean {
   if (typeof window === 'undefined') return false;
   try {
@@ -244,12 +226,7 @@ function writeFirebaseAuthHint(active: boolean): void {
 function isAuthPriorityRoute(): boolean {
   if (typeof window === 'undefined') return false;
   const path = window.location.pathname;
-  return (
-    path.startsWith('/purchased') ||
-    path.startsWith('/login') ||
-    path.startsWith('/signin') ||
-    path.startsWith('/account')
-  );
+  return path.startsWith('/purchased') || path.startsWith('/account');
 }
 
 async function hasStoredFirebaseIndexedDb(): Promise<boolean> {
@@ -279,9 +256,7 @@ function toFirebaseSessionUser(fbUser: FirebaseAuthUser): SessionUser {
 
 export function AppSessionProvider({ children }: { children: React.ReactNode }) {
   const [firebaseUser, setFirebaseUser] = useState<FirebaseAuthUser | null>(null);
-  const [reviewerSession, setReviewerSession] = useState<ReviewerSessionState | null>(null);
   const [firebaseAuthReady, setFirebaseAuthReady] = useState(false);
-  const [reviewerHydrated, setReviewerHydrated] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [analytics, setAnalytics] = useState<UserAnalyticsSummary | null>(null);
@@ -304,24 +279,14 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
   const checkoutInFlightRef = useRef(false);
   const authUnsubRef = useRef<(() => void) | null>(null);
 
-  const authReady = firebaseAuthReady && reviewerHydrated;
+  const authReady = firebaseAuthReady;
 
   const user = useMemo<SessionUser | null>(() => {
     if (firebaseUser) {
       return toFirebaseSessionUser(firebaseUser);
     }
-    if (reviewerSession) {
-      return {
-        uid: reviewerSession.uid,
-        email: reviewerSession.email,
-        displayName: reviewerSession.displayName,
-        photoURL: null,
-        authProvider: 'reviewer-test',
-        getIdToken: async () => reviewerSession.token,
-      };
-    }
     return null;
-  }, [firebaseUser, reviewerSession]);
+  }, [firebaseUser]);
 
   const attachFirebaseAuthListener = useCallback(async () => {
     if (authUnsubRef.current) return;
@@ -385,58 +350,6 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       active = false;
       window.removeEventListener('storage', onStorage);
       window.removeEventListener('examdash:attempt-updated', refreshAttempts);
-    };
-  }, []);
-
-  // Hydrate hidden reviewer session ONLY when the presence cookie hint is set
-  useEffect(() => {
-    let active = true;
-    if (!hasReviewerHintCookie()) {
-      void Promise.resolve().then(() => {
-        if (active) setReviewerHydrated(true);
-      });
-      return () => {
-        active = false;
-      };
-    }
-
-    fetch('/api/auth/reviewer-session', { cache: 'no-store' })
-      .then((res) => (res.ok ? res.json() : null))
-      .then(
-        (
-          payload: {
-            authenticated?: boolean;
-            user?: { uid?: string; email?: string; displayName?: string } | null;
-            token?: string | null;
-          } | null
-        ) => {
-          if (!active) return;
-          if (
-            payload?.authenticated &&
-            payload.user?.uid &&
-            payload.user?.email &&
-            payload.token
-          ) {
-            setReviewerSession({
-              uid: payload.user.uid,
-              email: payload.user.email,
-              displayName: payload.user.displayName || 'Razorpay Reviewer',
-              token: payload.token,
-            });
-          } else {
-            setReviewerSession(null);
-          }
-        }
-      )
-      .catch(() => {
-        if (active) setReviewerSession(null);
-      })
-      .finally(() => {
-        if (active) setReviewerHydrated(true);
-      });
-
-    return () => {
-      active = false;
     };
   }, []);
 
@@ -512,22 +425,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       })
       .catch(() => undefined);
 
-    // Reviewer test sessions persist cart/purchases/progress locally and authenticate server APIs directly
-    if (user.authProvider !== 'firebase-google' || !firebaseUser) {
-      void Promise.resolve().then(() => {
-        if (!active) return;
-        setPurchasedItems(readLocalPurchases(currentUid));
-        setReadingProgressMap(readLocalProgressMap(currentUid));
-        setAnalytics({
-          testsAttempted: 0,
-          booksOwned: 0,
-          examsOwned: 0,
-          averageAccuracy: 0,
-          studyStreakDays: 0,
-        });
-        setRemoteWritable(false);
-        setPurchasesLoading(false);
-      });
+    if (!firebaseUser) {
       return () => {
         active = false;
       };
@@ -611,68 +509,10 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     }
   }, [attachFirebaseAuthListener]);
 
-  const signInWithReviewerCredentials = useCallback(
-    async (identifier: string, password: string): Promise<ReviewerSignInResult> => {
-      setAuthBusy(true);
-      setAuthError(null);
-      try {
-        const res = await fetch('/api/auth/reviewer-login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ identifier, password }),
-          cache: 'no-store',
-        });
-
-        const payload = (await res.json().catch(() => ({}))) as {
-          authenticated?: boolean;
-          user?: { uid?: string; email?: string; displayName?: string };
-          token?: string;
-          error?: string;
-        };
-
-        if (
-          !res.ok ||
-          !payload.authenticated ||
-          !payload.user?.uid ||
-          !payload.user?.email ||
-          !payload.token
-        ) {
-          return {
-            ok: false,
-            error: payload.error || 'Invalid email or password.',
-          };
-        }
-
-        setReviewerSession({
-          uid: payload.user.uid,
-          email: payload.user.email,
-          displayName: payload.user.displayName || 'Razorpay Reviewer',
-          token: payload.token,
-        });
-        setReviewerHydrated(true);
-        return { ok: true };
-      } catch {
-        return {
-          ok: false,
-          error: 'Unable to reach sign-in service. Please try again.',
-        };
-      } finally {
-        setAuthBusy(false);
-      }
-    },
-    []
-  );
-
   const signOut = useCallback(async () => {
     setAuthBusy(true);
     setAuthError(null);
     try {
-      if (reviewerSession || hasReviewerHintCookie()) {
-        await fetch('/api/auth/reviewer-logout', { method: 'POST', cache: 'no-store' }).catch(
-          () => undefined
-        );
-        setReviewerSession(null);
-      }
       if (firebaseUser) {
         const syncMod = await loadFirebaseSync();
         await syncMod.signOutFirebaseUser();
@@ -683,7 +523,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     } finally {
       setAuthBusy(false);
     }
-  }, [firebaseUser, reviewerSession]);
+  }, [firebaseUser]);
 
   const addToCart = useCallback(
     async (item: PublicCatalogBaseDTO) => {
@@ -801,10 +641,6 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       const merged = mergePurchases(newPurchases, readLocalPurchases(activeUser.uid));
       setPurchasedItems(merged);
       writeLocalPurchases(activeUser.uid, merged);
-
-      if (activeUser.authProvider !== 'firebase-google') {
-        return;
-      }
 
       const syncMod = await loadFirebaseSync();
       const liveFbUser = syncMod.getLiveFirebaseUser();
@@ -1058,7 +894,6 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       reconcileMessage,
       clearReconcileMessage,
       signIn,
-      signInWithReviewerCredentials,
       signOut,
       addToCart,
       removeFromCart,
@@ -1095,7 +930,6 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       reconcileMessage,
       clearReconcileMessage,
       signIn,
-      signInWithReviewerCredentials,
       signOut,
       addToCart,
       removeFromCart,

@@ -145,22 +145,27 @@ const ORDER_BINDING_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 const KEY_ID_ENV_NAMES = [
   'RAZORPAY_KEY_ID',
   'NEXT_PUBLIC_RAZORPAY_KEY_ID',
+  'RAZORPAY_LIVE_KEY_ID',
   'RAZORPAY_KEY',
   'NEXT_PUBLIC_RAZORPAY_KEY',
+  'RZP_KEY_ID',
 ] as const;
 
 const KEY_SECRET_ENV_NAMES = [
   'RAZORPAY_KEY_SECRET',
+  'RAZORPAY_LIVE_KEY_SECRET',
   'RAZORPAY_SECRET',
+  'RZP_KEY_SECRET',
 ] as const;
 
 const WEBHOOK_SECRET_ENV_NAMES = [
   'RAZORPAY_WEBHOOK_SECRET',
   'RAZORPAY_WEBHOOK_SIGNING_SECRET',
+  'RZP_WEBHOOK_SECRET',
 ] as const;
 
 function stripWrappingQuotes(raw: string): string {
-  const trimmed = raw.trim();
+  const trimmed = raw.replace(/^\uFEFF/, '').trim();
   if (
     trimmed.length >= 2 &&
     ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
@@ -171,13 +176,19 @@ function stripWrappingQuotes(raw: string): string {
   return trimmed;
 }
 
+function getRuntimeEnvRecord(): Record<string, string | undefined> {
+  const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+  return proc?.env ?? process.env;
+}
+
 /**
- * Reads runtime environment variables via bracket access on an aliased `process.env`
- * reference so Next.js / webpack DefinePlugin NEVER statically inlines
- * `NEXT_PUBLIC_RAZORPAY_KEY_ID` as `""` during standalone Docker builds.
+ * Reads runtime environment variables via dynamic lookup on `globalThis.process.env`
+ * so Next.js / webpack DefinePlugin NEVER statically inlines `NEXT_PUBLIC_RAZORPAY_KEY_ID`
+ * as `""` during standalone Docker builds. Also tolerates accidental case or whitespace
+ * differences in Cloud Run / Secret Manager variable names and trailing newlines in values.
  */
 function readRuntimeEnv(names: readonly string[]): string {
-  const runtimeEnv: Record<string, string | undefined> = process.env;
+  const runtimeEnv = getRuntimeEnvRecord();
   for (const name of names) {
     const raw = runtimeEnv[name];
     if (typeof raw !== 'string') continue;
@@ -186,6 +197,18 @@ function readRuntimeEnv(names: readonly string[]): string {
       return cleaned;
     }
   }
+
+  // Fallback: case-insensitive & trimmed key lookup in case a secret key has stray spaces/casing
+  const upperTargets = new Set(names.map((n) => n.toUpperCase()));
+  for (const [envKey, raw] of Object.entries(runtimeEnv)) {
+    if (typeof raw !== 'string') continue;
+    if (!upperTargets.has(envKey.trim().toUpperCase())) continue;
+    const cleaned = stripWrappingQuotes(raw);
+    if (cleaned.length > 0 && !/^MY_RAZORPAY_/i.test(cleaned)) {
+      return cleaned;
+    }
+  }
+
   return '';
 }
 
@@ -203,9 +226,14 @@ export interface RazorpayConfigDiagnostics {
   readonly hasKeyId: boolean;
   readonly hasKeySecret: boolean;
   readonly mode: RazorpayServerConfig['mode'];
+  readonly detectedEnvKeys: readonly string[];
 }
 
 export function getRazorpayConfigDiagnostics(): RazorpayConfigDiagnostics {
+  const runtimeEnv = getRuntimeEnvRecord();
+  const detectedEnvKeys = Object.keys(runtimeEnv)
+    .filter((k) => /razorpay|rzp/i.test(k))
+    .sort();
   const keyId = readRuntimeEnv(KEY_ID_ENV_NAMES);
   const keySecret = getRazorpayKeySecret();
   const mode: RazorpayServerConfig['mode'] = keyId.startsWith('rzp_test_')
@@ -219,6 +247,7 @@ export function getRazorpayConfigDiagnostics(): RazorpayConfigDiagnostics {
     hasKeyId: Boolean(keyId),
     hasKeySecret: Boolean(keySecret),
     mode,
+    detectedEnvKeys,
   };
 }
 

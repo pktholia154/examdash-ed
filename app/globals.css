@@ -182,6 +182,19 @@
   filter: invert(0.92) hue-rotate(180deg);
 }
 
+/* PDF scroll container touch-action governance:
+   - Unzoomed (<=100%): lock horizontal drift for rock-solid vertical touch scrolling
+   - Zoomed (>100%): allow full 2D horizontal & vertical panning to reach left/right edges */
+.pdf-scroll-locked {
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.pdf-scroll-pannable {
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* --- Reflowable Markdown Reader Typography & Virtualization --- */
 .md-reader-prose {
   font-size: calc(1rem * var(--md-scale, 1));

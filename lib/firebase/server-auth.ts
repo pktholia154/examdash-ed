@@ -1,38 +1,20 @@
 import { FIREBASE_CONFIG, FIRESTORE_DATABASE_ID } from './config';
 import { decodeFirestoreValue } from './server-catalog';
-import {
-  isReviewerSessionToken,
-  verifyReviewerSessionToken,
-} from '@/core/auth/reviewer-account';
 
 export interface VerifiedFirebaseUser {
   readonly uid: string;
   readonly email: string | null;
   readonly emailVerified: boolean;
   readonly displayName: string | null;
-  readonly isReviewerSession?: boolean;
 }
 
 /**
- * Verifies a Firebase Auth ID token using Google Identity Toolkit REST API,
- * or a server-signed Razorpay verification reviewer session token.
+ * Verifies a Firebase Auth ID token using Google Identity Toolkit REST API.
  * Works reliably on all Firebase projects (including Starter Tier) without needing Admin IAM.
  */
 export async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedFirebaseUser | null> {
   const clean = idToken.trim();
   if (!clean || clean.length > 4096) return null;
-
-  if (isReviewerSessionToken(clean)) {
-    const reviewer = verifyReviewerSessionToken(clean);
-    if (!reviewer) return null;
-    return {
-      uid: reviewer.uid,
-      email: reviewer.email,
-      emailVerified: true,
-      displayName: reviewer.displayName,
-      isReviewerSession: true,
-    };
-  }
 
   try {
     const response = await fetch(
