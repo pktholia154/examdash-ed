@@ -2,10 +2,19 @@ import React from 'react';
 import type { Metadata } from 'next';
 import { notFound, permanentRedirect } from 'next/navigation';
 import { DetailPageServerShell } from '@/components/templates/DetailPageServerShell';
-import { fetchPublishedExams, lookupExamBySlug } from '@/lib/firebase/server-catalog';
+import {
+  fetchPublishedBooks,
+  fetchPublishedExams,
+  lookupExamBySlug,
+} from '@/lib/firebase/server-catalog';
 import { escapeJsonLd } from '@/lib/design-system/formatters';
 import { buildCleanMetaDescription } from '@/lib/seo/overview-markdown';
-import { buildExamDetailGraph, getCanonicalBaseUrl } from '@/lib/seo/structured-data';
+import { selectRelatedCatalogItems } from '@/lib/seo/related-items';
+import {
+  buildExamDetailGraph,
+  getCanonicalBaseUrl,
+  getCatalogThumbnailUrl,
+} from '@/lib/seo/structured-data';
 
 export const revalidate = 120;
 
@@ -24,6 +33,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   }
 
   const exam = lookup.item;
+  const baseUrl = getCanonicalBaseUrl();
   const description = buildCleanMetaDescription(
     exam.seoDescription,
     exam.fullDescription,
@@ -31,6 +41,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     160
   );
   const canonicalPath = `/exams/${exam.urlSlug}`;
+  const thumbnailUrl = getCatalogThumbnailUrl(baseUrl, 'exams', exam.urlSlug);
 
   return {
     title: exam.title,
@@ -52,11 +63,21 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
       title: exam.title,
       description,
       url: canonicalPath,
+      images: [
+        {
+          url: thumbnailUrl,
+          width: 1200,
+          height: 630,
+          type: 'image/png',
+          alt: exam.title,
+        },
+      ],
     },
     twitter: {
       card: 'summary_large_image',
       title: exam.title,
       description,
+      images: [thumbnailUrl],
     },
   };
 }
@@ -74,8 +95,11 @@ export default async function ExamDetailPage({ params }: PageProps) {
   }
 
   const exam = lookup.item;
-  const allExams = await fetchPublishedExams();
-  const relatedExams = allExams.filter((e) => e.id !== exam.id).slice(0, 3);
+  const [allBooks, allExams] = await Promise.all([
+    fetchPublishedBooks(),
+    fetchPublishedExams(),
+  ]);
+  const relatedItems = selectRelatedCatalogItems(exam, allBooks, allExams, 6);
   const graph = buildExamDetailGraph(getCanonicalBaseUrl(), exam);
 
   return (
@@ -84,7 +108,7 @@ export default async function ExamDetailPage({ params }: PageProps) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: escapeJsonLd(graph) }}
       />
-      <DetailPageServerShell item={exam} relatedItems={relatedExams} />
+      <DetailPageServerShell item={exam} relatedItems={relatedItems} />
     </>
   );
 }

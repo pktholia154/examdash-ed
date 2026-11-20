@@ -9,6 +9,7 @@ import { PriceDisplay } from '@/components/atoms/PriceDisplay';
 import { getContentTypeConfig } from '@/lib/design-system/content-types';
 import { renderOverviewMarkdownToHtml } from '@/lib/seo/overview-markdown';
 import { normalizeIsoTimestamp } from '@/lib/seo/sitemap-builder';
+import { filterConflictingPriceTags } from '@/lib/seo/structured-data';
 import type { PublicBookDTO, PublicExamPackDTO } from '@/lib/design-system/types';
 
 export interface DetailPageServerShellProps {
@@ -69,6 +70,7 @@ export function DetailPageServerShell({
   const overviewHtml = renderOverviewMarkdownToHtml(item.fullDescription);
   const publishedDate = formatReadableDate(item.publishAt);
   const updatedDate = formatReadableDate(item.updatedAt);
+  const displayTags = filterConflictingPriceTags(item.tags, item.buyPrice);
 
   const firstSampleMockId =
     isExam && (item.mocktestTitles.length > 0 || item.sampleJsonStoragePath)
@@ -215,16 +217,16 @@ export function DetailPageServerShell({
                   className="seo-overview-prose"
                   dangerouslySetInnerHTML={{ __html: overviewHtml }}
                 />
-                {item.tags.length > 0 && (
+                {displayTags.length > 0 && (
                   <p className="pt-2 text-xs text-[var(--text-muted)]">
-                    Topics: {item.tags.join(' · ')}
+                    Topics: {displayTags.join(' · ')}
                   </p>
                 )}
               </section>
             )}
 
-            {!overviewHtml && item.tags.length > 0 && (
-              <p className="text-xs text-[var(--text-muted)]">Topics: {item.tags.join(' · ')}</p>
+            {!overviewHtml && displayTags.length > 0 && (
+              <p className="text-xs text-[var(--text-muted)]">Topics: {displayTags.join(' · ')}</p>
             )}
 
             {/* Item-Specific Factual Publication Details (Zero Boilerplate) */}
@@ -303,31 +305,38 @@ export function DetailPageServerShell({
           </div>
         </article>
 
-        {/* Shallow Internal Link Graph: Real Published Related Items Only */}
-        {relatedItems.length > 0 && (
-          <section
-            aria-labelledby="related-items-heading"
-            className="border-t border-[var(--border-subtle)] pt-8"
-          >
-            <div className="flex items-baseline justify-between gap-4">
-              <h2
-                id="related-items-heading"
-                className="text-lg font-bold text-[var(--text-primary)]"
-              >
-                More {config.label}
-              </h2>
-              <Link
-                href={config.routePrefix}
-                className="text-xs font-semibold text-[var(--brand-accent)] hover:underline"
-              >
-                View all {config.label.toLowerCase()}
+        {/* Shallow Server-Side Internal Link Graph: Published Related Catalog Items + Hub Links */}
+        <section
+          aria-labelledby="related-items-heading"
+          className="space-y-5 border-t border-[var(--border-subtle)] pt-8"
+        >
+          <div className="flex flex-wrap items-baseline justify-between gap-4">
+            <h2
+              id="related-items-heading"
+              className="text-lg font-bold text-[var(--text-primary)]"
+            >
+              {relatedItems.length > 0
+                ? displayType
+                  ? `Related Study Resources & More in ${displayType}`
+                  : `Related Study Resources`
+                : 'Explore ExamDash Catalog'}
+            </h2>
+            <div className="flex flex-wrap items-center gap-4 text-xs font-semibold text-[var(--brand-accent)]">
+              <Link href="/books" className="hover:underline">
+                All Study Books
+              </Link>
+              <Link href="/exams" className="hover:underline">
+                All Exam Packs
               </Link>
             </div>
-            <ul className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          </div>
+
+          {relatedItems.length > 0 && (
+            <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {relatedItems.map((rel) => {
                 const relConfig = getContentTypeConfig(rel.contentType);
                 return (
-                  <li key={rel.id}>
+                  <li key={`${rel.contentType}-${rel.id}`}>
                     <Link
                       href={`${relConfig.routePrefix}/${rel.urlSlug}`}
                       className="flex items-start gap-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-canvas)] p-4 transition-colors hover:border-[var(--border-strong)]"
@@ -338,6 +347,9 @@ export function DetailPageServerShell({
                         size="compact"
                       />
                       <div className="min-w-0 flex-1 space-y-1">
+                        <p className="text-[11px] font-medium text-[var(--text-muted)]">
+                          {relConfig.singularLabel} · {formatCategoryLabel(rel.type) || rel.language}
+                        </p>
                         <p className="line-clamp-2 text-sm font-semibold text-[var(--text-primary)]">
                           {rel.title}
                         </p>
@@ -353,8 +365,26 @@ export function DetailPageServerShell({
                 );
               })}
             </ul>
-          </section>
-        )}
+          )}
+
+          <nav
+            aria-label="Explore catalog hubs"
+            className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-[var(--border-subtle)] pt-4 text-xs text-[var(--text-secondary)]"
+          >
+            <Link href="/" className="font-medium hover:text-[var(--text-primary)] hover:underline">
+              ExamDash Catalog Home
+            </Link>
+            <Link href="/books" className="font-medium hover:text-[var(--text-primary)] hover:underline">
+              Browse Study Books &amp; Question Banks
+            </Link>
+            <Link href="/exams" className="font-medium hover:text-[var(--text-primary)] hover:underline">
+              Browse Online Exam Packs &amp; Mock Tests
+            </Link>
+            <Link href="/refund-policy" className="hover:text-[var(--text-primary)] hover:underline">
+              Digital Refund Policy
+            </Link>
+          </nav>
+        </section>
       </main>
     </SiteChromeShell>
   );

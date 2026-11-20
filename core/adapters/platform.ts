@@ -312,15 +312,7 @@ export const webFullscreenAdapter: FullscreenAdapter = {
 
 export const webExternalLinkAdapter: ExternalLinkAdapter = {
   openExternal(url: string): void {
-    if (typeof document === 'undefined') return;
-    // Use anchor click with rel=noopener noreferrer to avoid blocked popups in iframes
-    const a = document.createElement('a');
-    a.href = url;
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    void import('./capacitor').then((mod) => mod.openCapacitorOrWebUrl(url));
   },
 };
 

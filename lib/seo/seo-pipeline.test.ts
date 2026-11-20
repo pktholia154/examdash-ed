@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DEFAULT_CANONICAL_ORIGIN,
   buildBookDetailGraph,
   buildContactPageGraph,
   buildExamDetailGraph,
@@ -8,9 +9,12 @@ import {
   buildHubCollectionGraph,
   buildLegalPageGraph,
   buildOrganizationGraph,
+  filterConflictingPriceTags,
   getCanonicalBaseUrl,
+  getCatalogThumbnailUrl,
   normalizeLanguageTag,
 } from './structured-data';
+import { selectRelatedCatalogItems } from './related-items';
 import {
   BUSINESS_IDENTITY,
   COMPLIANCE_PAGE_LINKS,
@@ -28,6 +32,7 @@ import {
   evaluateHostPolicy,
   normalizeHostname,
 } from './host-policy';
+import { getCapacitorPlatform, isNativeCapacitorPlatform } from '@/core/adapters/capacitor';
 import type { PublicBookDTO, PublicExamPackDTO } from '@/lib/design-system/types';
 
 const SAMPLE_BOOK: PublicBookDTO = {
@@ -41,7 +46,7 @@ const SAMPLE_BOOK: PublicBookDTO = {
   language: 'English',
   publisher: 'MT',
   authorName: 'MT',
-  tags: ['Indian History'],
+  tags: ['Free Book', 'Indian History'],
   currency: 'INR',
   listPrice: 120,
   buyPrice: 100,
@@ -79,8 +84,40 @@ const SAMPLE_EXAM: PublicExamPackDTO = {
   publishAt: '2026-11-18T16:37:22.873506Z',
 };
 
-test('JSON-LD graphs link via @id, use real hub breadcrumbs, and omit banned/fake schemas', () => {
-  const baseUrl = 'https://examdash.example';
+test('getCanonicalBaseUrl never leaks localhost or preview Cloud Run origins and defaults to https://exam-dash.com', () => {
+  const saved = {
+    CANONICAL_APP_URL: process.env.CANONICAL_APP_URL,
+    CANONICAL_HOST: process.env.CANONICAL_HOST,
+    APP_URL: process.env.APP_URL,
+    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
+  };
+
+  try {
+    delete process.env.CANONICAL_APP_URL;
+    delete process.env.CANONICAL_HOST;
+    delete process.env.APP_URL;
+    delete process.env.NEXT_PUBLIC_APP_URL;
+    assert.equal(getCanonicalBaseUrl(), DEFAULT_CANONICAL_ORIGIN);
+    assert.equal(getCanonicalBaseUrl(), 'https://exam-dash.com');
+
+    process.env.APP_URL = 'http://localhost:3000';
+    assert.equal(getCanonicalBaseUrl(), 'https://exam-dash.com');
+
+    process.env.APP_URL = 'https://ais-dev-abc123.asia-southeast1.run.app';
+    assert.equal(getCanonicalBaseUrl(), 'https://exam-dash.com');
+
+    process.env.CANONICAL_APP_URL = 'https://exam-dash.com/';
+    assert.equal(getCanonicalBaseUrl(), 'https://exam-dash.com');
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
+test('JSON-LD graphs emit Product/Book & Product/Course rich results with PNG thumbnails and omit banned/fake schemas', () => {
+  const baseUrl = 'https://exam-dash.com';
   const org = buildOrganizationGraph(baseUrl);
   const home = buildHomeCollectionGraph(baseUrl, [SAMPLE_BOOK], [SAMPLE_EXAM]);
   const hub = buildHubCollectionGraph(baseUrl, {
@@ -94,6 +131,9 @@ test('JSON-LD graphs link via @id, use real hub breadcrumbs, and omit banned/fak
 
   const combinedJson = JSON.stringify([org, home, hub, bookGraph, examGraph]);
 
+  // Zero localhost leaks anywhere in JSON-LD
+  assert.equal(combinedJson.includes('localhost'), false, 'JSON-LD must never include localhost');
+
   // Strict GSC Compliance: zero deprecated/restricted/fake schemas
   for (const forbidden of ['FAQPage', 'HowTo', 'SpecialAnnouncement', 'SearchAction', 'AggregateRating', '"Review"']) {
     assert.equal(combinedJson.includes(forbidden), false, `Must not emit ${forbidden}`);
@@ -103,20 +143,71 @@ test('JSON-LD graphs link via @id, use real hub breadcrumbs, and omit banned/fak
   const bookBreadcrumb = bookGraph['@graph'].find((n) => n['@type'] === 'BreadcrumbList') as {
     itemListElement: Array<{ item: string }>;
   };
-  assert.equal(bookBreadcrumb.itemListElement[1].item, 'https://examdash.example/books');
+  assert.equal(bookBreadcrumb.itemListElement[1].item, 'https://exam-dash.com/books');
 
-  // Exam breadcrumbs must use real /exams URL (never /#exams fragment)
+  // Exam breadcrumbs must use real /exams URL
   const examBreadcrumb = examGraph['@graph'].find((n) => n['@type'] === 'BreadcrumbList') as {
     itemListElement: Array<{ item: string }>;
   };
-  assert.equal(examBreadcrumb.itemListElement[1].item, 'https://examdash.example/exams');
+  assert.equal(examBreadcrumb.itemListElement[1].item, 'https://exam-dash.com/exams');
 
-  // Book node uses clean BCP-47 language & ISO-8601 date
+  // Book node uses ["Product", "Book"], generated PNG thumbnail, MerchantReturnPolicy & ShippingDetails
   assert.equal(normalizeLanguageTag('English'), 'en');
   assert.equal(normalizeLanguageTag('Hindi'), 'hi');
-  const bookNode = bookGraph['@graph'].find((n) => n['@type'] === 'Book') as Record<string, unknown>;
+  const bookNode = bookGraph['@graph'].find(
+    (n) => Array.isArray(n['@type']) && n['@type'].includes('Book')
+  ) as Record<string, unknown>;
+  assert.deepEqual(bookNode['@type'], ['Product', 'Book']);
+  assert.equal(bookNode.sku, 'B1');
+  assert.deepEqual(bookNode.image, [
+    getCatalogThumbnailUrl(baseUrl, 'books', SAMPLE_BOOK.urlSlug),
+  ]);
   assert.equal(bookNode.inLanguage, 'en');
   assert.equal(bookNode.dateModified, '2026-11-18T10:35:03.412Z');
+  // Conflicting "Free Book" tag is stripped for paid buyPrice=100 while preserving topical tag
+  assert.equal(bookNode.keywords, 'Indian History');
+  assert.deepEqual(filterConflictingPriceTags(['Free Book', 'Indian History'], 100), ['Indian History']);
+  assert.deepEqual(filterConflictingPriceTags(['Free Book', 'Indian History'], 0), ['Free Book', 'Indian History']);
+
+  const bookOffer = bookNode.offers as Record<string, unknown>;
+  assert.equal(bookOffer.price, '100');
+  assert.equal(bookOffer.priceCurrency, 'INR');
+  assert.equal(bookOffer.availability, 'https://schema.org/InStock');
+  assert.ok(bookOffer.hasMerchantReturnPolicy);
+  assert.ok(bookOffer.shippingDetails);
+
+  // Exam node uses ["Product", "Course"] with generated PNG thumbnail
+  const examNode = examGraph['@graph'].find(
+    (n) => Array.isArray(n['@type']) && n['@type'].includes('Course')
+  ) as Record<string, unknown>;
+  assert.deepEqual(examNode['@type'], ['Product', 'Course']);
+  assert.deepEqual(examNode.image, [
+    getCatalogThumbnailUrl(baseUrl, 'exams', SAMPLE_EXAM.urlSlug),
+  ]);
+});
+
+test('selectRelatedCatalogItems ranks same-category items first and backfills cross-collection up to limit', () => {
+  const book2: PublicBookDTO = { ...SAMPLE_BOOK, id: 'B2', urlSlug: 'b2', title: 'Book 2', type: 'Question Bank' };
+  const book3: PublicBookDTO = { ...SAMPLE_BOOK, id: 'B3', urlSlug: 'b3', title: 'Book 3', type: 'Notes' };
+  const exam2: PublicExamPackDTO = { ...SAMPLE_EXAM, id: 'E2', urlSlug: 'e2', title: 'Exam 2' };
+
+  const selected = selectRelatedCatalogItems(SAMPLE_BOOK, [SAMPLE_BOOK, book3, book2], [SAMPLE_EXAM, exam2], 6);
+  assert.deepEqual(
+    selected.map((x) => `${x.contentType}:${x.id}`),
+    ['books:B2', 'books:B3', 'exams:E1', 'exams:E2']
+  );
+
+  // When only 1 book exists, cross-collection exams still populate internal links
+  const crossOnly = selectRelatedCatalogItems(SAMPLE_BOOK, [SAMPLE_BOOK], [SAMPLE_EXAM], 6);
+  assert.deepEqual(
+    crossOnly.map((x) => `${x.contentType}:${x.id}`),
+    ['exams:E1']
+  );
+});
+
+test('Capacitor guard safely reports web runtime outside native wrapper', () => {
+  assert.equal(isNativeCapacitorPlatform(), false);
+  assert.equal(getCapacitorPlatform(), 'web');
 });
 
 test('Sitemap builder produces valid sharded index & urlset XML without priority/changefreq', () => {
@@ -129,16 +220,16 @@ test('Sitemap builder produces valid sharded index & urlset XML without priority
   assert.equal(latest, '2026-11-18T16:40:24.066Z');
 
   const indexXml = buildSitemapIndexXml([
-    { loc: 'https://examdash.example/sitemaps/pages.xml', lastmod: latest },
+    { loc: 'https://exam-dash.com/sitemaps/pages.xml', lastmod: latest },
   ]);
   assert.equal(indexXml.includes('<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'), true);
   assert.equal(indexXml.includes('<lastmod>2026-11-18T16:40:24.066Z</lastmod>'), true);
 
   const urlsetXml = buildSitemapUrlsetXml([
     {
-      loc: 'https://examdash.example/books/b1',
+      loc: 'https://exam-dash.com/books/b1',
       lastmod: '2026-11-18T10:35:03.412Z',
-      images: [{ loc: 'https://examdash.example/pwa-512x512.png', title: 'ExamDash & Co' }],
+      images: [{ loc: 'https://exam-dash.com/books/b1/thumbnail.png', title: 'ExamDash & Co' }],
     },
   ]);
   assert.equal(urlsetXml.includes('xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"'), true);
@@ -148,17 +239,17 @@ test('Sitemap builder produces valid sharded index & urlset XML without priority
 });
 
 test('IndexNow payload builder filters foreign hosts and sets keyLocation', () => {
-  const payload = buildIndexNowPayload('https://examdash.example', 'abc123456789', [
+  const payload = buildIndexNowPayload('https://exam-dash.com', 'abc123456789', [
     '/books/b1',
-    'https://examdash.example/exams/e1',
+    'https://exam-dash.com/exams/e1',
     'https://evil.example/phish',
   ]);
   assert.ok(payload);
-  assert.equal(payload.host, 'examdash.example');
-  assert.equal(payload.keyLocation, 'https://examdash.example/abc123456789.txt');
+  assert.equal(payload.host, 'exam-dash.com');
+  assert.equal(payload.keyLocation, 'https://exam-dash.com/abc123456789.txt');
   assert.deepEqual(payload.urlList, [
-    'https://examdash.example/books/b1',
-    'https://examdash.example/exams/e1',
+    'https://exam-dash.com/books/b1',
+    'https://exam-dash.com/exams/e1',
   ]);
 });
 
@@ -228,16 +319,6 @@ test('Host policy redirects production mirrors cleanly without port leaks while 
     new URLSearchParams('page=1&utm_source=google')
   );
   assert.equal(redirectUrl, 'https://exam-dash.com/books?utm_source=google');
-
-  // getCanonicalBaseUrl normalizes trailing slashes cleanly
-  const prev = process.env.CANONICAL_APP_URL;
-  process.env.CANONICAL_APP_URL = 'https://exam-dash.com/';
-  try {
-    assert.equal(getCanonicalBaseUrl(), 'https://exam-dash.com');
-  } finally {
-    if (prev === undefined) delete process.env.CANONICAL_APP_URL;
-    else process.env.CANONICAL_APP_URL = prev;
-  }
 });
 
 test('Compliance pages and contact graphs include verified Razorpay merchant details and clean Schema.org markup', () => {

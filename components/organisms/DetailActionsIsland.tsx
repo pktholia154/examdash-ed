@@ -19,10 +19,18 @@ import {
 import { PriceDisplay } from '@/components/atoms/PriceDisplay';
 import { DynamicMarkdownReader, DynamicPdfReader } from '@/components/readers/DynamicReaders';
 import { useAppSession } from '@/components/providers/AppSessionProvider';
-import { loadAllExamAttemptSummaries } from '@/core/exam/storage';
-import { formatDurationClock, type ExamAttemptSummary } from '@/core/exam/engine';
+import type { ExamAttemptSummary } from '@/core/exam/engine';
 import type { ContentTypeKey } from '@/lib/design-system/tokens';
 import type { PublicCatalogBaseDTO, ReaderFormat } from '@/lib/design-system/types';
+
+function formatClock(remainingMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(remainingMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return hours > 0 ? `${pad(hours)}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
+}
 
 export interface DetailActionsIslandProps {
   readonly id: string;
@@ -83,17 +91,20 @@ export function DetailActionsIsland({
     if (contentType !== 'exams' || !firstSampleMockId) return;
     let active = true;
     const refresh = () => {
-      void loadAllExamAttemptSummaries().then((list) => {
-        if (!active) return;
-        const match =
-          list.find(
-            (s) =>
-              s.examPackId === id &&
-              s.mode === 'sample' &&
-              (s.examSetId === firstSampleMockId || s.examSetId === 'exam_set_1')
-          ) ?? null;
-        setSampleAttempt(match);
-      });
+      void import('@/core/exam/storage')
+        .then((mod) => mod.loadAllExamAttemptSummaries())
+        .then((list) => {
+          if (!active) return;
+          const match =
+            list.find(
+              (s) =>
+                s.examPackId === id &&
+                s.mode === 'sample' &&
+                (s.examSetId === firstSampleMockId || s.examSetId === 'exam_set_1')
+            ) ?? null;
+          setSampleAttempt(match);
+        })
+        .catch(() => undefined);
     };
     refresh();
     window.addEventListener('examdash:attempt-updated', refresh);
@@ -209,10 +220,17 @@ export function DetailActionsIsland({
         >
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--border-subtle)] pb-4">
             <div>
+              {buyPrice > 0 && (
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                  Full Digital Edition
+                </p>
+              )}
               <PriceDisplay buyPrice={buyPrice} listPrice={listPrice} currency={currency} size="lg" />
               <p data-nosnippet="" className="mt-1 text-xs text-[var(--text-muted)]">
                 {isBook
-                  ? 'Full PDF & Markdown editions unlock in your Purchased Library after checkout.'
+                  ? buyPrice > 0
+                    ? 'Paid full PDF & Markdown editions unlock in your Purchased Library after checkout. Preview free samples below.'
+                    : 'Full PDF & Markdown editions available to read online.'
                   : 'All included mock test sets unlock in your Purchased Library after checkout.'}
               </p>
             </div>
@@ -243,7 +261,7 @@ export function DetailActionsIsland({
                   className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-canvas)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] whitespace-nowrap transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   <FileText className="h-4 w-4" aria-hidden="true" />
-                  <span>Sample PDF</span>
+                  <span>Free Sample PDF</span>
                 </button>
 
                 <button
@@ -253,7 +271,7 @@ export function DetailActionsIsland({
                   className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-canvas)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] whitespace-nowrap transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   <BookOpen className="h-4 w-4" aria-hidden="true" />
-                  <span>Sample Markdown</span>
+                  <span>Free Sample Markdown</span>
                 </button>
               </>
             )}
@@ -275,7 +293,7 @@ export function DetailActionsIsland({
                   <>
                     <Play className="h-4 w-4" aria-hidden="true" />
                     <span>
-                      Resume Free Sample ({formatDurationClock(sampleAttempt.remainingMs)})
+                      Resume Free Sample ({formatClock(sampleAttempt.remainingMs)})
                     </span>
                   </>
                 ) : (

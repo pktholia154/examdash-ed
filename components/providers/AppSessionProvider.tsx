@@ -1,29 +1,10 @@
 'use client';
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { onAuthStateChanged, type User } from 'firebase/auth';
-import {
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  onSnapshot,
-  query,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  where,
-} from 'firebase/firestore';
-import { auth, db, signInWithGoogle, signOutUser, testFirestoreConnection } from '@/lib/firebase/client';
-import { buildFirestoreErrorInfo, OperationType } from '@/lib/firebase/errors';
-import {
-  clearPendingRazorpayOrder,
-  razorpayWebCheckoutAdapter,
-  readPendingRazorpayOrder,
-  reconcileRazorpayOrder,
-  type CheckoutItemRequest,
-  type PendingRazorpayOrder,
-  type ReconcileOrderResult,
+import type {
+  CheckoutItemRequest,
+  PendingRazorpayOrder,
+  ReconcileOrderResult,
 } from '@/core/adapters/platform';
 import type {
   CartItem,
@@ -33,12 +14,13 @@ import type {
   UserAnalyticsSummary,
 } from '@/lib/design-system/types';
 import { computeCartTotals, type CartTotals } from '@/lib/design-system/formatters';
-import { loadAllExamAttemptSummaries } from '@/core/exam/storage';
 import type { ExamAttemptSummary } from '@/core/exam/engine';
+import type { FirebaseAuthUser } from '@/lib/firebase/session-sync';
 
 const LOCAL_CART_KEY = 'examdash_cart_v1';
 const LOCAL_PURCHASES_PREFIX = 'examdash_purchases_v1_';
 const LOCAL_PROGRESS_PREFIX = 'examdash_progress_v1_';
+const LOCAL_FB_AUTH_HINT_KEY = 'examdash_fb_auth_hint_v1';
 
 export interface OrderReceiptSummary {
   readonly orderId: string;
@@ -108,6 +90,26 @@ interface AppSessionContextValue {
 }
 
 const AppSessionContext = createContext<AppSessionContextValue | null>(null);
+
+type FirebaseSyncModule = typeof import('@/lib/firebase/session-sync');
+type PlatformAdapterModule = typeof import('@/core/adapters/platform');
+
+let firebaseSyncPromise: Promise<FirebaseSyncModule> | null = null;
+let platformAdapterPromise: Promise<PlatformAdapterModule> | null = null;
+
+function loadFirebaseSync(): Promise<FirebaseSyncModule> {
+  if (!firebaseSyncPromise) {
+    firebaseSyncPromise = import('@/lib/firebase/session-sync');
+  }
+  return firebaseSyncPromise;
+}
+
+function loadPlatformAdapter(): Promise<PlatformAdapterModule> {
+  if (!platformAdapterPromise) {
+    platformAdapterPromise = import('@/core/adapters/platform');
+  }
+  return platformAdapterPromise;
+}
 
 function makeItemDocId(contentType: string, itemId: string): string {
   return `${contentType}_${itemId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
@@ -182,13 +184,18 @@ function readLocalProgressMap(uidOrGuest: string): Record<string, ReadingProgres
     const raw = window.localStorage.getItem(`${LOCAL_PROGRESS_PREFIX}${uidOrGuest}`);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, ReadingProgressRecord>) : {};
+    return typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, ReadingProgressRecord>)
+      : {};
   } catch {
     return {};
   }
 }
 
-function writeLocalProgressMap(uidOrGuest: string, map: Record<string, ReadingProgressRecord>): void {
+function writeLocalProgressMap(
+  uidOrGuest: string,
+  map: Record<string, ReadingProgressRecord>
+): void {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(`${LOCAL_PROGRESS_PREFIX}${uidOrGuest}`, JSON.stringify(map));
@@ -197,7 +204,10 @@ function writeLocalProgressMap(uidOrGuest: string, map: Record<string, ReadingPr
   }
 }
 
-function mergePurchases(remote: readonly PurchasedItem[], local: readonly PurchasedItem[]): PurchasedItem[] {
+function mergePurchases(
+  remote: readonly PurchasedItem[],
+  local: readonly PurchasedItem[]
+): PurchasedItem[] {
   const byId = new Map<string, PurchasedItem>();
   for (const item of local) byId.set(item.id, item);
   for (const item of remote) byId.set(item.id, item);
@@ -209,7 +219,54 @@ function hasReviewerHintCookie(): boolean {
   return document.cookie.split(';').some((entry) => entry.trim() === 'ed_rs=1');
 }
 
-function toFirebaseSessionUser(fbUser: User): SessionUser {
+function readFirebaseAuthHint(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(LOCAL_FB_AUTH_HINT_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeFirebaseAuthHint(active: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (active) {
+      window.localStorage.setItem(LOCAL_FB_AUTH_HINT_KEY, '1');
+    } else {
+      window.localStorage.removeItem(LOCAL_FB_AUTH_HINT_KEY);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function isAuthPriorityRoute(): boolean {
+  if (typeof window === 'undefined') return false;
+  const path = window.location.pathname;
+  return (
+    path.startsWith('/purchased') ||
+    path.startsWith('/login') ||
+    path.startsWith('/signin') ||
+    path.startsWith('/account')
+  );
+}
+
+async function hasStoredFirebaseIndexedDb(): Promise<boolean> {
+  if (typeof indexedDB === 'undefined') return false;
+  const idbWithList = indexedDB as IDBFactory & {
+    databases?: () => Promise<Array<{ name?: string }>>;
+  };
+  if (typeof idbWithList.databases !== 'function') return false;
+  try {
+    const dbs = await idbWithList.databases();
+    return dbs.some((d) => d.name === 'firebaseLocalStorageDb');
+  } catch {
+    return false;
+  }
+}
+
+function toFirebaseSessionUser(fbUser: FirebaseAuthUser): SessionUser {
   return {
     uid: fbUser.uid,
     email: fbUser.email,
@@ -221,7 +278,7 @@ function toFirebaseSessionUser(fbUser: User): SessionUser {
 }
 
 export function AppSessionProvider({ children }: { children: React.ReactNode }) {
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseAuthUser | null>(null);
   const [reviewerSession, setReviewerSession] = useState<ReviewerSessionState | null>(null);
   const [firebaseAuthReady, setFirebaseAuthReady] = useState(false);
   const [reviewerHydrated, setReviewerHydrated] = useState(false);
@@ -234,7 +291,9 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
 
   const [purchasedItems, setPurchasedItems] = useState<PurchasedItem[]>([]);
   const [purchasesLoading, setPurchasesLoading] = useState(false);
-  const [readingProgressMap, setReadingProgressMap] = useState<Record<string, ReadingProgressRecord>>({});
+  const [readingProgressMap, setReadingProgressMap] = useState<
+    Record<string, ReadingProgressRecord>
+  >({});
   const [checkoutBusy, setCheckoutBusy] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [lastOrderReceipt, setLastOrderReceipt] = useState<OrderReceiptSummary | null>(null);
@@ -243,6 +302,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
   const [reconcileMessage, setReconcileMessage] = useState<string | null>(null);
   const [examAttemptSummaries, setExamAttemptSummaries] = useState<ExamAttemptSummary[]>([]);
   const checkoutInFlightRef = useRef(false);
+  const authUnsubRef = useRef<(() => void) | null>(null);
 
   const authReady = firebaseAuthReady && reviewerHydrated;
 
@@ -263,7 +323,20 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     return null;
   }, [firebaseUser, reviewerSession]);
 
-  // Post-mount connection check & guest cart/progress hydration
+  const attachFirebaseAuthListener = useCallback(async () => {
+    if (authUnsubRef.current) return;
+    const syncMod = await loadFirebaseSync();
+    if (authUnsubRef.current) return;
+    authUnsubRef.current = syncMod.subscribeFirebaseAuthState((fbUser) => {
+      setFirebaseUser(fbUser);
+      setFirebaseAuthReady(true);
+      if (fbUser) {
+        writeFirebaseAuthHint(true);
+      }
+    });
+  }, []);
+
+  // Post-mount local guest cart/progress hydration + marketing param cleanup (zero network calls)
   useEffect(() => {
     let active = true;
     void Promise.resolve().then(() => {
@@ -271,7 +344,6 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       setCartItems(readLocalCart());
       setReadingProgressMap(readLocalProgressMap('guest'));
     });
-    void testFirestoreConnection();
 
     const onStorage = (event: StorageEvent) => {
       if (event.key === LOCAL_CART_KEY) {
@@ -279,11 +351,14 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       }
     };
     const refreshAttempts = () => {
-      void loadAllExamAttemptSummaries().then((list) => {
-        if (active) setExamAttemptSummaries(list);
-      });
+      void import('@/core/exam/storage')
+        .then((mod) => mod.loadAllExamAttemptSummaries())
+        .then((list) => {
+          if (active) setExamAttemptSummaries(list);
+        })
+        .catch(() => undefined);
     };
-    refreshAttempts();
+
     window.addEventListener('storage', onStorage);
     window.addEventListener('examdash:attempt-updated', refreshAttempts);
 
@@ -365,16 +440,40 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     };
   }, []);
 
-  // Auth listener (Firebase Google Sign-In)
+  // Lazy-boot Firebase Auth SDK ONLY when a returning session hint exists or on auth-priority routes.
+  // Public anonymous visitors & search crawlers download zero Firebase Auth/Firestore chunks.
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
-      setFirebaseUser(fbUser);
-      setFirebaseAuthReady(true);
-    });
-    return () => unsubscribe();
-  }, []);
+    let active = true;
 
-  // Sync user analytics, cart, purchases, and reading progress once authenticated
+    async function maybeHydrateFirebaseAuth() {
+      const shouldBootImmediately = readFirebaseAuthHint() || isAuthPriorityRoute();
+      if (shouldBootImmediately) {
+        await attachFirebaseAuthListener();
+        return;
+      }
+
+      const hasExistingFbDb = await hasStoredFirebaseIndexedDb();
+      if (!active) return;
+      if (hasExistingFbDb) {
+        await attachFirebaseAuthListener();
+        return;
+      }
+
+      setFirebaseAuthReady(true);
+    }
+
+    void maybeHydrateFirebaseAuth();
+
+    return () => {
+      active = false;
+      if (authUnsubRef.current) {
+        authUnsubRef.current();
+        authUnsubRef.current = null;
+      }
+    };
+  }, [attachFirebaseAuthListener]);
+
+  // Sync user analytics, cart, purchases, reading progress, and exam attempts once authenticated
   useEffect(() => {
     if (!authReady) return;
 
@@ -396,13 +495,27 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     }
 
     const currentUid = user.uid;
+    let active = true;
+
+    // Hydrate local exam attempts for signed-in analytics strip
+    void import('@/core/exam/storage')
+      .then((mod) => mod.loadAllExamAttemptSummaries())
+      .then((list) => {
+        if (active) setExamAttemptSummaries(list);
+      })
+      .catch(() => undefined);
+
+    // Hydrate pending Razorpay order lazily
+    void loadPlatformAdapter()
+      .then((mod) => {
+        if (active) setPendingOrder(mod.readPendingRazorpayOrder(currentUid));
+      })
+      .catch(() => undefined);
 
     // Reviewer test sessions persist cart/purchases/progress locally and authenticate server APIs directly
     if (user.authProvider !== 'firebase-google' || !firebaseUser) {
-      let active = true;
       void Promise.resolve().then(() => {
         if (!active) return;
-        setPendingOrder(readPendingRazorpayOrder(currentUid));
         setPurchasedItems(readLocalPurchases(currentUid));
         setReadingProgressMap(readLocalProgressMap(currentUid));
         setAnalytics({
@@ -420,264 +533,28 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       };
     }
 
-    const activeFirebaseUser = firebaseUser;
-    let cancelled = false;
-    let unsubCart: (() => void) | null = null;
-    let unsubPurchases: (() => void) | null = null;
-    let unsubProgress: (() => void) | null = null;
-    const userDocRef = doc(db, 'users', activeFirebaseUser.uid);
-
-    async function bootstrapUserState() {
-      setPendingOrder(readPendingRazorpayOrder(activeFirebaseUser.uid));
-      setPurchasedItems(readLocalPurchases(activeFirebaseUser.uid));
-      setReadingProgressMap(readLocalProgressMap(activeFirebaseUser.uid));
-      setPurchasesLoading(true);
-      try {
-        const snap = await getDoc(userDocRef);
-        if (cancelled) return;
-
-        if (snap.exists()) {
-          const data = snap.data();
-          setAnalytics({
-            testsAttempted: typeof data.testsAttempted === 'number' ? data.testsAttempted : 0,
-            booksOwned: typeof data.booksOwned === 'number' ? data.booksOwned : 0,
-            examsOwned: typeof data.examsOwned === 'number' ? data.examsOwned : 0,
-            averageAccuracy: typeof data.averageAccuracy === 'number' ? data.averageAccuracy : 0,
-            studyStreakDays: typeof data.studyStreakDays === 'number' ? data.studyStreakDays : 0,
-          });
-          setRemoteWritable(true);
-        } else {
-          try {
-            await setDoc(userDocRef, {
-              uid: activeFirebaseUser.uid,
-              displayName: (activeFirebaseUser.displayName || '').slice(0, 120),
-              email: (activeFirebaseUser.email || '').slice(0, 254),
-              photoURL: (activeFirebaseUser.photoURL || '').slice(0, 1000),
-              testsAttempted: 0,
-              booksOwned: 0,
-              examsOwned: 0,
-              averageAccuracy: 0,
-              studyStreakDays: 0,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-            if (!cancelled) {
-              setAnalytics({
-                testsAttempted: 0,
-                booksOwned: 0,
-                examsOwned: 0,
-                averageAccuracy: 0,
-                studyStreakDays: 0,
-              });
-              setRemoteWritable(true);
-            }
-          } catch (createErr) {
-            console.warn(
-              'Firestore profile init skipped:',
-              JSON.stringify(
-                buildFirestoreErrorInfo(
-                  createErr,
-                  OperationType.CREATE,
-                  `users/${activeFirebaseUser.uid}`,
-                  activeFirebaseUser
-                )
-              )
-            );
-            if (!cancelled) {
-              setAnalytics({
-                testsAttempted: 0,
-                booksOwned: 0,
-                examsOwned: 0,
-                averageAccuracy: 0,
-                studyStreakDays: 0,
-              });
-              setRemoteWritable(false);
-            }
-          }
-        }
-
-        // Cart listener
-        const cartCollectionRef = collection(db, 'users', activeFirebaseUser.uid, 'cart');
-        const cartQuery = query(cartCollectionRef, where('uid', '==', activeFirebaseUser.uid));
-        unsubCart = onSnapshot(
-          cartQuery,
-          (snapshot) => {
-            if (cancelled) return;
-            const remoteItems: CartItem[] = snapshot.docs.map((d) => {
-              const data = d.data();
-              return {
-                id: d.id,
-                itemId: String(data.itemId ?? d.id),
-                contentType:
-                  data.contentType === 'exams' || data.contentType === 'quizbooks'
-                    ? data.contentType
-                    : 'books',
-                title: String(data.title ?? ''),
-                urlSlug: String(data.urlSlug ?? ''),
-                currency: String(data.currency ?? 'INR'),
-                buyPrice: Number(data.buyPrice ?? 0),
-                listPrice: Number(data.listPrice ?? 0),
-                quantity: Math.max(1, Math.min(20, Number(data.quantity ?? 1))),
-              };
-            });
-            setRemoteWritable(true);
-            if (remoteItems.length > 0) {
-              setCartItems(remoteItems);
-              writeLocalCart(remoteItems);
-            }
-          },
-          (err) => {
-            console.warn(
-              'Firestore cart listener:',
-              JSON.stringify(
-                buildFirestoreErrorInfo(
-                  err,
-                  OperationType.LIST,
-                  `users/${activeFirebaseUser.uid}/cart`,
-                  activeFirebaseUser
-                )
-              )
-            );
-          }
-        );
-
-        // Purchases listener
-        const purchasesRef = collection(db, 'users', activeFirebaseUser.uid, 'purchases');
-        const purchasesQuery = query(purchasesRef, where('uid', '==', activeFirebaseUser.uid));
-        unsubPurchases = onSnapshot(
-          purchasesQuery,
-          (snapshot) => {
-            if (cancelled) return;
-            const remotePurchases: PurchasedItem[] = snapshot.docs.map((d) => {
-              const data = d.data();
-              const purchasedTs = data.purchasedAt;
-              const purchasedAtIso =
-                purchasedTs && typeof purchasedTs.toDate === 'function'
-                  ? purchasedTs.toDate().toISOString()
-                  : typeof purchasedTs === 'string'
-                    ? purchasedTs
-                    : new Date().toISOString();
-              return {
-                id: d.id,
-                itemId: String(data.itemId ?? ''),
-                contentType:
-                  data.contentType === 'exams' || data.contentType === 'quizbooks'
-                    ? data.contentType
-                    : 'books',
-                title: String(data.title ?? ''),
-                urlSlug: String(data.urlSlug ?? ''),
-                currency: String(data.currency ?? 'INR'),
-                amountPaid: Number(data.amountPaid ?? 0),
-                razorpayOrderId: String(data.razorpayOrderId ?? ''),
-                razorpayPaymentId: String(data.razorpayPaymentId ?? ''),
-                entitlementProof: String(data.entitlementProof ?? ''),
-                status: 'completed',
-                purchasedAt: purchasedAtIso,
-              };
-            });
-
-            const merged = mergePurchases(remotePurchases, readLocalPurchases(activeFirebaseUser.uid));
-            setPurchasedItems(merged);
-            writeLocalPurchases(activeFirebaseUser.uid, merged);
-            setPurchasesLoading(false);
-          },
-          (err) => {
-            console.warn(
-              'Firestore purchases listener:',
-              JSON.stringify(
-                buildFirestoreErrorInfo(
-                  err,
-                  OperationType.LIST,
-                  `users/${activeFirebaseUser.uid}/purchases`,
-                  activeFirebaseUser
-                )
-              )
-            );
-            setPurchasesLoading(false);
-          }
-        );
-
-        // Reading Progress listener
-        const progressRef = collection(db, 'users', activeFirebaseUser.uid, 'readingProgress');
-        const progressQuery = query(progressRef, where('uid', '==', activeFirebaseUser.uid));
-        unsubProgress = onSnapshot(
-          progressQuery,
-          (snapshot) => {
-            if (cancelled) return;
-            const nextMap: Record<string, ReadingProgressRecord> = {
-              ...readLocalProgressMap(activeFirebaseUser.uid),
-            };
-            for (const d of snapshot.docs) {
-              const data = d.data();
-              const updatedTs = data.updatedAt;
-              const updatedIso =
-                updatedTs && typeof updatedTs.toDate === 'function'
-                  ? updatedTs.toDate().toISOString()
-                  : new Date().toISOString();
-              nextMap[d.id] = {
-                id: d.id,
-                bookId: String(data.bookId ?? ''),
-                format: data.format === 'markdown' ? 'markdown' : 'pdf',
-                mode: data.mode === 'full' ? 'full' : 'sample',
-                pageIndex: Number(data.pageIndex ?? 0),
-                totalPages: Number(data.totalPages ?? 0),
-                offsetRatio: Number(data.offsetRatio ?? 0),
-                blockIndex: Number(data.blockIndex ?? 0),
-                zoomScale: Number(data.zoomScale ?? 1),
-                progressPercent: Number(data.progressPercent ?? 0),
-                updatedAt: updatedIso,
-              };
-            }
-            setReadingProgressMap(nextMap);
-            writeLocalProgressMap(activeFirebaseUser.uid, nextMap);
-          },
-          (err) => {
-            console.warn(
-              'Firestore readingProgress listener:',
-              JSON.stringify(
-                buildFirestoreErrorInfo(
-                  err,
-                  OperationType.LIST,
-                  `users/${activeFirebaseUser.uid}/readingProgress`,
-                  activeFirebaseUser
-                )
-              )
-            );
-          }
-        );
-      } catch (err) {
-        console.warn(
-          'Firestore user read:',
-          JSON.stringify(
-            buildFirestoreErrorInfo(
-              err,
-              OperationType.GET,
-              `users/${activeFirebaseUser.uid}`,
-              activeFirebaseUser
-            )
-          )
-        );
-        if (!cancelled) {
-          setAnalytics({
-            testsAttempted: 0,
-            booksOwned: 0,
-            examsOwned: 0,
-            averageAccuracy: 0,
-            studyStreakDays: 0,
-          });
-          setRemoteWritable(false);
-          setPurchasesLoading(false);
-        }
-      }
-    }
-
-    void bootstrapUserState();
+    let stopRemoteSync: (() => void) | null = null;
+    void loadFirebaseSync().then((syncMod) => {
+      if (!active) return;
+      stopRemoteSync = syncMod.startRemoteUserSync(firebaseUser, {
+        readLocalPurchases,
+        writeLocalPurchases,
+        mergePurchases,
+        readLocalProgressMap,
+        writeLocalProgressMap,
+        writeLocalCart,
+        onAnalytics: setAnalytics,
+        onRemoteWritable: setRemoteWritable,
+        onCartItems: setCartItems,
+        onPurchasedItems: setPurchasedItems,
+        onPurchasesLoading: setPurchasesLoading,
+        onReadingProgressMap: setReadingProgressMap,
+      });
+    });
 
     return () => {
-      cancelled = true;
-      if (unsubCart) unsubCart();
-      if (unsubPurchases) unsubPurchases();
-      if (unsubProgress) unsubProgress();
+      active = false;
+      if (stopRemoteSync) stopRemoteSync();
     };
   }, [authReady, firebaseUser, user]);
 
@@ -716,7 +593,12 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     setAuthBusy(true);
     setAuthError(null);
     try {
-      const signedInUser = await signInWithGoogle();
+      await attachFirebaseAuthListener();
+      const syncMod = await loadFirebaseSync();
+      const signedInUser = await syncMod.signInWithFirebaseGoogle();
+      writeFirebaseAuthHint(true);
+      setFirebaseUser(signedInUser);
+      setFirebaseAuthReady(true);
       return toFirebaseSessionUser(signedInUser);
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Unable to complete Google sign-in.';
@@ -727,7 +609,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     } finally {
       setAuthBusy(false);
     }
-  }, []);
+  }, [attachFirebaseAuthListener]);
 
   const signInWithReviewerCredentials = useCallback(
     async (identifier: string, password: string): Promise<ReviewerSignInResult> => {
@@ -748,7 +630,13 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
           error?: string;
         };
 
-        if (!res.ok || !payload.authenticated || !payload.user?.uid || !payload.user?.email || !payload.token) {
+        if (
+          !res.ok ||
+          !payload.authenticated ||
+          !payload.user?.uid ||
+          !payload.user?.email ||
+          !payload.token
+        ) {
           return {
             ok: false,
             error: payload.error || 'Invalid email or password.',
@@ -786,7 +674,9 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         setReviewerSession(null);
       }
       if (firebaseUser) {
-        await signOutUser();
+        const syncMod = await loadFirebaseSync();
+        await syncMod.signOutFirebaseUser();
+        writeFirebaseAuthHint(false);
       }
     } catch {
       setAuthError('Could not sign out right now.');
@@ -799,21 +689,15 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     async (item: PublicCatalogBaseDTO) => {
       const cartId = makeItemDocId(item.contentType, item.id);
 
-      // Digital editions are single-license per account: skip if already owned
       const alreadyOwned = purchasedItems.some(
         (entry) =>
           entry.id === cartId ||
           (entry.contentType === item.contentType && entry.itemId === item.id)
       );
-      if (alreadyOwned) {
-        return;
-      }
+      if (alreadyOwned) return;
 
       const existingItem = cartItems.find((entry) => entry.id === cartId);
-      // Digital books & mock exam packs carry a single license (quantity = 1) to prevent duplicate billing
-      if (existingItem) {
-        return;
-      }
+      if (existingItem) return;
 
       const updatedItem: CartItem = {
         id: cartId,
@@ -833,27 +717,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       writeLocalCart(nextList);
 
       if (firebaseUser && remoteWritable) {
-        const ref = doc(db, 'users', firebaseUser.uid, 'cart', cartId);
-        try {
-          await setDoc(ref, {
-            ...updatedItem,
-            uid: firebaseUser.uid,
-            addedAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        } catch (err) {
-          console.warn(
-            'Firestore cart write fallback to local:',
-            JSON.stringify(
-              buildFirestoreErrorInfo(
-                err,
-                OperationType.WRITE,
-                `users/${firebaseUser.uid}/cart/${cartId}`,
-                firebaseUser
-              )
-            )
-          );
-        }
+        const syncMod = await loadFirebaseSync();
+        await syncMod.writeRemoteCartItem(firebaseUser, updatedItem);
       }
     },
     [cartItems, firebaseUser, purchasedItems, remoteWritable]
@@ -866,21 +731,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       writeLocalCart(nextList);
 
       if (firebaseUser && remoteWritable) {
-        try {
-          await deleteDoc(doc(db, 'users', firebaseUser.uid, 'cart', cartItemId));
-        } catch (err) {
-          console.warn(
-            'Firestore cart delete:',
-            JSON.stringify(
-              buildFirestoreErrorInfo(
-                err,
-                OperationType.DELETE,
-                `users/${firebaseUser.uid}/cart/${cartItemId}`,
-                firebaseUser
-              )
-            )
-          );
-        }
+        const syncMod = await loadFirebaseSync();
+        await syncMod.deleteRemoteCartItem(firebaseUser, cartItemId);
       }
     },
     [cartItems, firebaseUser, remoteWritable]
@@ -900,24 +752,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       writeLocalCart(nextList);
 
       if (firebaseUser && remoteWritable) {
-        try {
-          await updateDoc(doc(db, 'users', firebaseUser.uid, 'cart', cartItemId), {
-            quantity: bounded,
-            updatedAt: serverTimestamp(),
-          });
-        } catch (err) {
-          console.warn(
-            'Firestore cart quantity update:',
-            JSON.stringify(
-              buildFirestoreErrorInfo(
-                err,
-                OperationType.UPDATE,
-                `users/${firebaseUser.uid}/cart/${cartItemId}`,
-                firebaseUser
-              )
-            )
-          );
-        }
+        const syncMod = await loadFirebaseSync();
+        await syncMod.updateRemoteCartItemQuantity(firebaseUser, cartItemId, bounded);
       }
     },
     [cartItems, firebaseUser, removeFromCart, remoteWritable]
@@ -928,9 +764,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     setCartItems([]);
     writeLocalCart([]);
     if (firebaseUser && remoteWritable) {
-      await Promise.allSettled(
-        previous.map((item) => deleteDoc(doc(db, 'users', firebaseUser.uid, 'cart', item.id)))
-      );
+      const syncMod = await loadFirebaseSync();
+      await syncMod.clearRemoteCartItems(firebaseUser, previous);
     }
   }, [cartItems, firebaseUser, remoteWritable]);
 
@@ -967,92 +802,25 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       setPurchasedItems(merged);
       writeLocalPurchases(activeUser.uid, merged);
 
-      // Use live auth.currentUser rather than stale React closure state so inline sign-in during
-      // checkout immediately persists verified purchases to Firestore as well as local storage.
-      const liveFbUser = auth.currentUser;
-      if (activeUser.authProvider !== 'firebase-google' || !liveFbUser || liveFbUser.uid !== activeUser.uid) {
+      if (activeUser.authProvider !== 'firebase-google') {
         return;
       }
 
-      // Ensure parent /users/{uid} document exists before writing /purchases/{id}
-      // so Firestore security rule `exists(/databases/$(database)/documents/users/$(userId))` passes.
-      const userDocRef = doc(db, 'users', liveFbUser.uid);
-      try {
-        const userSnap = await getDoc(userDocRef);
-        if (!userSnap.exists()) {
-          await setDoc(userDocRef, {
-            uid: liveFbUser.uid,
-            displayName: (liveFbUser.displayName || '').slice(0, 120),
-            email: (liveFbUser.email || '').slice(0, 254),
-            photoURL: (liveFbUser.photoURL || '').slice(0, 1000),
-            testsAttempted: 0,
-            booksOwned: 0,
-            examsOwned: 0,
-            averageAccuracy: 0,
-            studyStreakDays: 0,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        }
-      } catch (profileErr) {
-        console.warn(
-          'Firestore user parent ensure skipped:',
-          JSON.stringify(
-            buildFirestoreErrorInfo(
-              profileErr,
-              OperationType.WRITE,
-              `users/${liveFbUser.uid}`,
-              liveFbUser
-            )
-          )
-        );
+      const syncMod = await loadFirebaseSync();
+      const liveFbUser = syncMod.getLiveFirebaseUser();
+      if (!liveFbUser || liveFbUser.uid !== activeUser.uid) {
+        return;
       }
-
-      await Promise.allSettled(
-        newPurchases.map(async (p) => {
-          const ref = doc(db, 'users', liveFbUser.uid, 'purchases', p.id);
-          try {
-            // Skip overwriting terminal immutable purchase records that already exist
-            const existingSnap = await getDoc(ref);
-            if (existingSnap.exists()) {
-              return;
-            }
-            await setDoc(ref, {
-              id: p.id,
-              uid: liveFbUser.uid,
-              itemId: p.itemId,
-              contentType: p.contentType,
-              title: p.title.slice(0, 240),
-              urlSlug: p.urlSlug.slice(0, 240),
-              currency: p.currency.slice(0, 8),
-              amountPaid: Math.max(0, p.amountPaid),
-              razorpayOrderId: p.razorpayOrderId.slice(0, 128),
-              razorpayPaymentId: p.razorpayPaymentId.slice(0, 128),
-              entitlementProof: p.entitlementProof.slice(0, 512),
-              status: 'completed',
-              purchasedAt: serverTimestamp(),
-            });
-          } catch (err) {
-            console.warn(
-              'Firestore purchase write (retained locally):',
-              JSON.stringify(
-                buildFirestoreErrorInfo(
-                  err,
-                  OperationType.CREATE,
-                  `users/${liveFbUser.uid}/purchases/${p.id}`,
-                  liveFbUser
-                )
-              )
-            );
-          }
-        })
-      );
+      await syncMod.persistRemotePurchases(liveFbUser, newPurchases);
     },
     []
   );
 
   const runRazorpayCheckout = useCallback(
-    async (itemsToBuy: readonly CheckoutItemRequest[], clearAfter: boolean): Promise<OrderReceiptSummary | null> => {
+    async (
+      itemsToBuy: readonly CheckoutItemRequest[],
+      clearAfter: boolean
+    ): Promise<OrderReceiptSummary | null> => {
       if (checkoutInFlightRef.current) return null;
       setCheckoutError(null);
       setReconcileMessage(null);
@@ -1063,7 +831,6 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         if (!activeUser) return null;
       }
 
-      // Filter out any digital items already owned by this account
       const unownedItems = itemsToBuy.filter(
         (item) => !isPurchased(item.contentType, item.itemId)
       );
@@ -1075,7 +842,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       checkoutInFlightRef.current = true;
       setCheckoutBusy(true);
       try {
-        const result = await razorpayWebCheckoutAdapter.checkout({
+        const platform = await loadPlatformAdapter();
+        const result = await platform.razorpayWebCheckoutAdapter.checkout({
           items: unownedItems,
           user: {
             uid: activeUser.uid,
@@ -1085,7 +853,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
           },
         });
 
-        setPendingOrder(readPendingRazorpayOrder(activeUser.uid));
+        setPendingOrder(platform.readPendingRazorpayOrder(activeUser.uid));
 
         if (result.status === 'cancelled' || !result.purchases || result.purchases.length === 0) {
           return null;
@@ -1096,7 +864,6 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         if (clearAfter) {
           await clearCart();
         } else {
-          // Remove bought items from cart if present
           const boughtIds = new Set(result.purchases.map((p) => p.id));
           for (const id of boughtIds) {
             if (cartItems.some((c) => c.id === id)) {
@@ -1117,7 +884,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         return receipt;
       } catch (err) {
         if (activeUser) {
-          setPendingOrder(readPendingRazorpayOrder(activeUser.uid));
+          const platform = await loadPlatformAdapter().catch(() => null);
+          if (platform) setPendingOrder(platform.readPendingRazorpayOrder(activeUser.uid));
         }
         setCheckoutError(
           err instanceof Error ? err.message : 'Unable to complete Razorpay checkout.'
@@ -1169,18 +937,19 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       setReconcileMessage(null);
       setCheckoutError(null);
       try {
+        const platform = await loadPlatformAdapter();
         const orderToken =
           pendingOrder && pendingOrder.orderId === targetOrderId
             ? pendingOrder.orderToken
             : undefined;
 
-        const result = await reconcileRazorpayOrder({
+        const result = await platform.reconcileRazorpayOrder({
           orderId: targetOrderId,
           orderToken,
           getIdToken: () => user.getIdToken(),
         });
 
-        setPendingOrder(readPendingRazorpayOrder(user.uid));
+        setPendingOrder(platform.readPendingRazorpayOrder(user.uid));
 
         if (result.status === 'completed' && result.purchases && result.purchases.length > 0) {
           await persistVerifiedPurchases(user, result.purchases);
@@ -1219,7 +988,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
   );
 
   const dismissPendingOrder = useCallback(() => {
-    clearPendingRazorpayOrder();
+    void loadPlatformAdapter().then((platform) => platform.clearPendingRazorpayOrder());
     setPendingOrder(null);
     setReconcileMessage(null);
   }, []);
@@ -1247,35 +1016,8 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       });
 
       if (firebaseUser && remoteWritable) {
-        const ref = doc(db, 'users', firebaseUser.uid, 'readingProgress', id);
-        try {
-          await setDoc(ref, {
-            id,
-            uid: firebaseUser.uid,
-            bookId: record.bookId,
-            format: record.format,
-            mode: record.mode,
-            pageIndex: record.pageIndex,
-            totalPages: record.totalPages,
-            offsetRatio: record.offsetRatio,
-            blockIndex: record.blockIndex,
-            zoomScale: record.zoomScale,
-            progressPercent: record.progressPercent,
-            updatedAt: serverTimestamp(),
-          });
-        } catch (err) {
-          console.warn(
-            'Firestore readingProgress sync fallback to local:',
-            JSON.stringify(
-              buildFirestoreErrorInfo(
-                err,
-                OperationType.WRITE,
-                `users/${firebaseUser.uid}/readingProgress/${id}`,
-                firebaseUser
-              )
-            )
-          );
-        }
+        const syncMod = await loadFirebaseSync();
+        await syncMod.writeRemoteReadingProgress(firebaseUser, record);
       }
     },
     [firebaseUser, remoteWritable, user]

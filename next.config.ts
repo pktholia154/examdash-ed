@@ -2,6 +2,8 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  compress: true,
+  poweredByHeader: false,
   eslint: {
     ignoreDuringBuilds: true,
   },
@@ -13,16 +15,25 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        source: '/_next/static/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=31536000, immutable',
+          },
+        ],
+      },
+      {
         source: '/.well-known/apple-app-site-association',
         headers: [
-          { key: 'Content-Type', value: 'application/json' },
+          { key: 'Content-Type', value: 'application/json; charset=utf-8' },
           { key: 'Cache-Control', value: 'public, max-age=3600, s-maxage=3600' },
         ],
       },
       {
         source: '/.well-known/assetlinks.json',
         headers: [
-          { key: 'Content-Type', value: 'application/json' },
+          { key: 'Content-Type', value: 'application/json; charset=utf-8' },
           { key: 'Cache-Control', value: 'public, max-age=3600, s-maxage=3600' },
         ],
       },

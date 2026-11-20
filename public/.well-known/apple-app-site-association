@@ -4,7 +4,26 @@
     "details": [
       {
         "appID": "TEAMID.com.examdash.app",
-        "paths": ["/books/*", "/exams/*", "/"]
+        "appIDs": ["TEAMID.com.examdash.app"],
+        "paths": ["NOT /api/*", "/books/*", "/exams/*", "/purchased", "/"],
+        "components": [
+          {
+            "/": "/api/*",
+            "exclude": true
+          },
+          {
+            "/": "/books/*"
+          },
+          {
+            "/": "/exams/*"
+          },
+          {
+            "/": "/purchased"
+          },
+          {
+            "/": "/"
+          }
+        ]
       }
     ]
   },

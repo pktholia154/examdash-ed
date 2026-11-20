@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { TopHeader } from '@/components/organisms/TopHeader';
 import { OfflineBanner } from '@/components/organisms/OfflineBanner';
@@ -11,12 +12,16 @@ import {
   ContentCollectionSection,
   type ContentCollectionSectionItem,
 } from '@/components/organisms/ContentCollectionSection';
-import { CartDrawer } from '@/components/organisms/CartDrawer';
 import { SiteFooter } from '@/components/organisms/SiteFooter';
 import { useAppSession } from '@/components/providers/AppSessionProvider';
 import { filterCatalogItems } from '@/lib/design-system/formatters';
 import type { ViewMode } from '@/lib/design-system/tokens';
 import type { PublicBookDTO, PublicExamPackDTO } from '@/lib/design-system/types';
+
+const LazyCartDrawer = dynamic(
+  () => import('@/components/organisms/CartDrawer').then((m) => m.CartDrawer),
+  { ssr: false }
+);
 
 export interface HomeDashboardTemplateProps {
   readonly books: readonly PublicBookDTO[];
@@ -219,24 +224,26 @@ export function HomeDashboardTemplate({
 
       <SiteFooter />
 
-      <CartDrawer
-        open={cartOpen}
-        items={cartItems}
-        totals={cartTotals}
-        isSignedIn={Boolean(user)}
-        checkoutBusy={checkoutBusy}
-        checkoutError={checkoutError}
-        pendingOrder={pendingOrder}
-        reconcileBusy={reconcileBusy}
-        reconcileMessage={reconcileMessage}
-        onClose={() => setCartOpen(false)}
-        onUpdateQuantity={(id, qty) => void updateCartQuantity(id, qty)}
-        onRemoveItem={(id) => void removeFromCart(id)}
-        onClearCart={() => void clearCart()}
-        onSignIn={() => void signIn()}
-        onCheckout={() => void handleCartCheckout()}
-        onReconcilePendingOrder={() => void handleReconcile()}
-      />
+      {cartOpen && (
+        <LazyCartDrawer
+          open={cartOpen}
+          items={cartItems}
+          totals={cartTotals}
+          isSignedIn={Boolean(user)}
+          checkoutBusy={checkoutBusy}
+          checkoutError={checkoutError}
+          pendingOrder={pendingOrder}
+          reconcileBusy={reconcileBusy}
+          reconcileMessage={reconcileMessage}
+          onClose={() => setCartOpen(false)}
+          onUpdateQuantity={(id, qty) => void updateCartQuantity(id, qty)}
+          onRemoveItem={(id) => void removeFromCart(id)}
+          onClearCart={() => void clearCart()}
+          onSignIn={() => void signIn()}
+          onCheckout={() => void handleCartCheckout()}
+          onReconcilePendingOrder={() => void handleReconcile()}
+        />
+      )}
     </div>
   );
 }

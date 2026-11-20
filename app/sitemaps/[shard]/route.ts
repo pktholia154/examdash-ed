@@ -100,6 +100,12 @@ export async function GET(_req: Request, context: RouteContext) {
     const entries: SitemapUrlEntry[] = slice.map((book) => ({
       loc: `${baseUrl}/books/${book.urlSlug}`,
       lastmod: book.updatedAt ?? book.publishAt,
+      images: [
+        {
+          loc: `${baseUrl}/books/${book.urlSlug}/thumbnail.png`,
+          title: book.title,
+        },
+      ],
     }));
     return xmlResponse(buildSitemapUrlsetXml(entries));
   }
@@ -113,6 +119,12 @@ export async function GET(_req: Request, context: RouteContext) {
     const entries: SitemapUrlEntry[] = slice.map((exam) => ({
       loc: `${baseUrl}/exams/${exam.urlSlug}`,
       lastmod: exam.updatedAt ?? exam.publishAt,
+      images: [
+        {
+          loc: `${baseUrl}/exams/${exam.urlSlug}/thumbnail.png`,
+          title: exam.title,
+        },
+      ],
     }));
     return xmlResponse(buildSitemapUrlsetXml(entries));
   }

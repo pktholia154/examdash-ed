@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
+import 'katex/dist/katex.min.css';
 import {
   BookOpen,
   Check,

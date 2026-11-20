@@ -1,12 +1,17 @@
 'use client';
 
 import React from 'react';
+import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { TopHeader } from '@/components/organisms/TopHeader';
 import { OfflineBanner } from '@/components/organisms/OfflineBanner';
-import { CartDrawer } from '@/components/organisms/CartDrawer';
 import { SiteFooter } from '@/components/organisms/SiteFooter';
 import { useAppSession } from '@/components/providers/AppSessionProvider';
+
+const LazyCartDrawer = dynamic(
+  () => import('@/components/organisms/CartDrawer').then((m) => m.CartDrawer),
+  { ssr: false }
+);
 
 export interface SiteChromeShellProps {
   readonly children: React.ReactNode;
@@ -76,24 +81,26 @@ export function SiteChromeShell({ children }: SiteChromeShellProps) {
 
       <SiteFooter />
 
-      <CartDrawer
-        open={cartOpen}
-        items={cartItems}
-        totals={cartTotals}
-        isSignedIn={Boolean(user)}
-        checkoutBusy={checkoutBusy}
-        checkoutError={checkoutError}
-        pendingOrder={pendingOrder}
-        reconcileBusy={reconcileBusy}
-        reconcileMessage={reconcileMessage}
-        onClose={() => setCartOpen(false)}
-        onUpdateQuantity={(id, qty) => void updateCartQuantity(id, qty)}
-        onRemoveItem={(id) => void removeFromCart(id)}
-        onClearCart={() => void clearCart()}
-        onSignIn={() => void signIn()}
-        onCheckout={() => void handleCartCheckout()}
-        onReconcilePendingOrder={() => void handleReconcile()}
-      />
+      {cartOpen && (
+        <LazyCartDrawer
+          open={cartOpen}
+          items={cartItems}
+          totals={cartTotals}
+          isSignedIn={Boolean(user)}
+          checkoutBusy={checkoutBusy}
+          checkoutError={checkoutError}
+          pendingOrder={pendingOrder}
+          reconcileBusy={reconcileBusy}
+          reconcileMessage={reconcileMessage}
+          onClose={() => setCartOpen(false)}
+          onUpdateQuantity={(id, qty) => void updateCartQuantity(id, qty)}
+          onRemoveItem={(id) => void removeFromCart(id)}
+          onClearCart={() => void clearCart()}
+          onSignIn={() => void signIn()}
+          onCheckout={() => void handleCartCheckout()}
+          onReconcilePendingOrder={() => void handleReconcile()}
+        />
+      )}
     </div>
   );
 }

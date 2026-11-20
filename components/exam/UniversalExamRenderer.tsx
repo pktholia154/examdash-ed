@@ -24,6 +24,7 @@ import {
 import { Check, Delete, X } from 'lucide-react';
 import katex from 'katex';
 import 'katex/contrib/mhchem';
+import 'katex/dist/katex.min.css';
 import type { ExamAnswerValue } from '@/core/exam/engine';
 import { isQuestionAttempted } from '@/core/exam/engine';
 import type { ExamOption, ExamQuestion, ExamVisual } from '@/core/exam/schema';

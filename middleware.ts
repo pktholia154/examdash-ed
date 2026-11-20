@@ -75,7 +75,7 @@ export function middleware(req: NextRequest) {
   // 0. Host canonicalization & mirror protection (evaluated first for single-hop redirects)
   const rawRequestHost = req.headers.get('x-forwarded-host') || req.headers.get('host');
   const canonicalHost = normalizeHostname(
-    process.env.CANONICAL_HOST || process.env.CANONICAL_APP_URL
+    process.env.CANONICAL_HOST || process.env.CANONICAL_APP_URL || 'exam-dash.com'
   );
   const enforceCanonicalHost =
     (process.env.ENFORCE_CANONICAL_HOST || '').trim().toLowerCase() === 'true';
@@ -157,8 +157,8 @@ export function middleware(req: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Match all request paths except static files, Next.js internals, API routes, and well-known files.
+     * Match all request paths except static files, Next.js internals, API routes, OG thumbnails, and well-known files.
      */
-    '/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|sitemaps/|indexnow-key.txt|wasm/|\\.well-known/|.*\\.(?:png|jpg|jpeg|gif|webp|avif|svg|ico|woff2?|css|js|wasm|json)$).*)',
+    '/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|sitemaps/|indexnow-key.txt|wasm/|\\.well-known/|.*opengraph-image|.*twitter-image|.*\\.(?:png|jpg|jpeg|gif|webp|avif|svg|ico|woff2?|css|js|wasm|json)$).*)',
   ],
 };

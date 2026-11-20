@@ -1,23 +1,85 @@
 import type { PublicBookDTO, PublicExamPackDTO } from '@/lib/design-system/types';
+import { BUSINESS_IDENTITY } from '@/lib/compliance/business-info';
+import { isLocalHostname, isPreviewHostname, normalizeHostname } from './host-policy';
 import { buildCleanMetaDescription, stripMarkdownToPlainText } from './overview-markdown';
 import { normalizeIsoTimestamp } from './sitemap-builder';
 
-export function getCanonicalBaseUrl(): string {
-  const raw = (
-    process.env.CANONICAL_APP_URL ||
-    process.env.APP_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    'http://localhost:3000'
-  ).trim();
+export const DEFAULT_CANONICAL_ORIGIN = 'https://exam-dash.com';
 
-  if (!raw) return 'http://localhost:3000';
+function isNonProductionCanonicalHost(hostname: string): boolean {
+  const host = normalizeHostname(hostname);
+  if (!host) return true;
+  if (isLocalHostname(host) || isPreviewHostname(host)) return true;
+  // Never emit ephemeral raw Cloud Run mirror URLs as canonical SEO origins
+  if (host.endsWith('.run.app')) return true;
+  return false;
+}
 
-  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+function parseProductionOrigin(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   try {
-    return new URL(withProtocol).origin;
+    const parsed = new URL(withProtocol);
+    if (isNonProductionCanonicalHost(parsed.hostname)) {
+      return null;
+    }
+    return `https://${parsed.host}`;
   } catch {
-    return withProtocol.replace(/\/+$/, '');
+    return null;
   }
+}
+
+/**
+ * Returns the authoritative production HTTPS canonical origin for `<link rel="canonical">`,
+ * OpenGraph URLs, JSON-LD `@id`/URLs, sitemaps, and `robots.txt`.
+ *
+ * Guarantees zero `http://localhost:3000` or ephemeral `.run.app` leaks in SSR HTML
+ * even when runtime environment variables are omitted.
+ */
+export function getCanonicalBaseUrl(): string {
+  const explicitCanonical = parseProductionOrigin(process.env.CANONICAL_APP_URL);
+  if (explicitCanonical) return explicitCanonical;
+
+  const canonicalHost = normalizeHostname(process.env.CANONICAL_HOST);
+  if (canonicalHost && !isNonProductionCanonicalHost(canonicalHost)) {
+    return `https://${canonicalHost}`;
+  }
+
+  const appOrigin =
+    parseProductionOrigin(process.env.APP_URL) ||
+    parseProductionOrigin(process.env.NEXT_PUBLIC_APP_URL);
+  if (appOrigin) return appOrigin;
+
+  return DEFAULT_CANONICAL_ORIGIN;
+}
+
+/**
+ * Returns the canonical, crawlable PNG thumbnail URL (1200x630 >= 500x500)
+ * shared identically across `og:image`, `twitter:image`, JSON-LD `image`, and Image Sitemaps.
+ */
+export function getCatalogThumbnailUrl(
+  baseUrl: string,
+  contentType: 'books' | 'exams',
+  urlSlug: string
+): string {
+  const origin = baseUrl.replace(/\/+$/, '');
+  return `${origin}/${contentType}/${urlSlug}/thumbnail.png`;
+}
+
+/**
+ * Filters standalone "Free" / "Free Book" / "Free Sample" tags when the full edition
+ * has a positive buyPrice so Product snippets never trigger paid-vs-free policy conflicts.
+ */
+export function filterConflictingPriceTags(
+  tags: readonly string[],
+  buyPrice: number
+): string[] {
+  const cleaned = tags.map((t) => t.trim()).filter(Boolean);
+  if (buyPrice <= 0) return cleaned;
+  return cleaned.filter((tag) => !/^free(?:\s+(?:book|sample|ebook|pdf|exam|test))?$/i.test(tag));
 }
 
 /**
@@ -35,6 +97,57 @@ export function normalizeLanguageTag(language?: string | null): string {
   return clean;
 }
 
+function buildDigitalOffer(
+  baseUrl: string,
+  canonicalUrl: string,
+  buyPrice: number,
+  currency: string
+) {
+  const resolvedCurrency = (currency || 'INR').trim().toUpperCase();
+  return {
+    '@type': 'Offer',
+    price: String(Math.max(0, buyPrice)),
+    priceCurrency: resolvedCurrency,
+    availability: 'https://schema.org/InStock',
+    itemCondition: 'https://schema.org/NewCondition',
+    url: canonicalUrl,
+    seller: { '@id': `${baseUrl}/#organization` },
+    hasMerchantReturnPolicy: {
+      '@type': 'MerchantReturnPolicy',
+      applicableCountry: 'IN',
+      returnPolicyCategory: 'https://schema.org/MerchantReturnNotPermitted',
+      merchantReturnLink: `${baseUrl}/refund-policy`,
+    },
+    shippingDetails: {
+      '@type': 'OfferShippingDetails',
+      shippingRate: {
+        '@type': 'MonetaryAmount',
+        value: '0',
+        currency: resolvedCurrency,
+      },
+      shippingDestination: {
+        '@type': 'DefinedRegion',
+        addressCountry: 'IN',
+      },
+      deliveryTime: {
+        '@type': 'ShippingDeliveryTime',
+        handlingTime: {
+          '@type': 'QuantitativeValue',
+          minValue: 0,
+          maxValue: 0,
+          unitCode: 'DAY',
+        },
+        transitTime: {
+          '@type': 'QuantitativeValue',
+          minValue: 0,
+          maxValue: 0,
+          unitCode: 'DAY',
+        },
+      },
+    },
+  };
+}
+
 export function buildOrganizationGraph(baseUrl: string) {
   return {
     '@context': 'https://schema.org',
@@ -42,8 +155,11 @@ export function buildOrganizationGraph(baseUrl: string) {
       {
         '@type': 'Organization',
         '@id': `${baseUrl}/#organization`,
-        name: 'ExamDash (ed)',
+        name: BUSINESS_IDENTITY.platformName,
+        alternateName: BUSINESS_IDENTITY.brandName,
+        legalName: BUSINESS_IDENTITY.legalName,
         url: baseUrl,
+        email: BUSINESS_IDENTITY.supportEmail,
         logo: {
           '@type': 'ImageObject',
           '@id': `${baseUrl}/#logo`,
@@ -56,7 +172,7 @@ export function buildOrganizationGraph(baseUrl: string) {
         '@type': 'WebSite',
         '@id': `${baseUrl}/#website`,
         url: baseUrl,
-        name: 'ExamDash (ed)',
+        name: BUSINESS_IDENTITY.platformName,
         publisher: {
           '@id': `${baseUrl}/#organization`,
         },
@@ -170,11 +286,12 @@ export function buildHubCollectionGraph(
 }
 
 /**
- * 1:1 Verified JSON-LD `@graph` for Book Detail Pages.
+ * 1:1 Verified JSON-LD `@graph` for Book Detail Pages (`["Product", "Book"]`).
  * Strictly derived from visible database fields — zero fabricated reviews, ratings, or FAQs.
  */
 export function buildBookDetailGraph(baseUrl: string, book: PublicBookDTO) {
   const canonicalUrl = `${baseUrl}/books/${book.urlSlug}`;
+  const thumbnailUrl = getCatalogThumbnailUrl(baseUrl, 'books', book.urlSlug);
   const description = buildCleanMetaDescription(
     book.seoDescription,
     book.fullDescription,
@@ -183,24 +300,24 @@ export function buildBookDetailGraph(baseUrl: string, book: PublicBookDTO) {
   );
   const datePublished = normalizeIsoTimestamp(book.publishAt);
   const dateModified = normalizeIsoTimestamp(book.updatedAt);
+  const alignedTags = filterConflictingPriceTags(book.tags, book.buyPrice);
 
   const bookNode: Record<string, unknown> = {
-    '@type': 'Book',
+    '@type': ['Product', 'Book'],
     '@id': `${canonicalUrl}#book`,
+    sku: book.id,
     name: book.title,
     url: canonicalUrl,
     description,
+    image: [thumbnailUrl],
+    brand: {
+      '@type': 'Brand',
+      name: book.publisher.trim() || BUSINESS_IDENTITY.platformName,
+    },
     bookFormat: 'https://schema.org/EBook',
     inLanguage: normalizeLanguageTag(book.language),
     mainEntityOfPage: { '@id': `${canonicalUrl}#webpage` },
-    offers: {
-      '@type': 'Offer',
-      price: String(book.buyPrice),
-      priceCurrency: book.currency || 'INR',
-      availability: 'https://schema.org/InStock',
-      url: canonicalUrl,
-      seller: { '@id': `${baseUrl}/#organization` },
-    },
+    offers: buildDigitalOffer(baseUrl, canonicalUrl, book.buyPrice, book.currency || 'INR'),
   };
 
   if (book.authorName.trim()) {
@@ -211,9 +328,10 @@ export function buildBookDetailGraph(baseUrl: string, book: PublicBookDTO) {
   }
   if (book.type.trim()) {
     bookNode.genre = book.type.trim();
+    bookNode.category = book.type.trim();
   }
-  if (book.tags.length > 0) {
-    bookNode.keywords = book.tags.join(', ');
+  if (alignedTags.length > 0) {
+    bookNode.keywords = alignedTags.join(', ');
   }
   if (datePublished) {
     bookNode.datePublished = datePublished;
@@ -228,6 +346,12 @@ export function buildBookDetailGraph(baseUrl: string, book: PublicBookDTO) {
     url: canonicalUrl,
     name: book.title,
     description,
+    primaryImageOfPage: {
+      '@type': 'ImageObject',
+      url: thumbnailUrl,
+      width: 1200,
+      height: 630,
+    },
     isPartOf: { '@id': `${baseUrl}/#website` },
     breadcrumb: { '@id': `${canonicalUrl}#breadcrumb` },
     mainEntity: { '@id': `${canonicalUrl}#book` },
@@ -255,11 +379,12 @@ export function buildBookDetailGraph(baseUrl: string, book: PublicBookDTO) {
 }
 
 /**
- * 1:1 Verified JSON-LD `@graph` for Exam Pack Detail Pages.
+ * 1:1 Verified JSON-LD `@graph` for Exam Pack Detail Pages (`["Product", "Course"]`).
  * Strictly derived from visible database fields — zero fabricated reviews, ratings, or FAQs.
  */
 export function buildExamDetailGraph(baseUrl: string, exam: PublicExamPackDTO) {
   const canonicalUrl = `${baseUrl}/exams/${exam.urlSlug}`;
+  const thumbnailUrl = getCatalogThumbnailUrl(baseUrl, 'exams', exam.urlSlug);
   const description = buildCleanMetaDescription(
     exam.seoDescription,
     exam.fullDescription,
@@ -268,33 +393,36 @@ export function buildExamDetailGraph(baseUrl: string, exam: PublicExamPackDTO) {
   );
   const datePublished = normalizeIsoTimestamp(exam.publishAt);
   const dateModified = normalizeIsoTimestamp(exam.updatedAt);
+  const alignedTags = filterConflictingPriceTags(exam.tags, exam.buyPrice);
 
   const courseNode: Record<string, unknown> = {
-    '@type': 'Course',
+    '@type': ['Product', 'Course'],
     '@id': `${canonicalUrl}#exam`,
+    sku: exam.id,
     name: exam.title,
     url: canonicalUrl,
     description,
+    image: [thumbnailUrl],
+    brand: {
+      '@type': 'Brand',
+      name: exam.publisher.trim() || BUSINESS_IDENTITY.platformName,
+    },
     inLanguage: normalizeLanguageTag(exam.language),
     mainEntityOfPage: { '@id': `${canonicalUrl}#webpage` },
     provider: exam.publisher.trim()
       ? { '@type': 'Organization', name: exam.publisher.trim() }
       : { '@id': `${baseUrl}/#organization` },
-    offers: {
-      '@type': 'Offer',
-      price: String(exam.buyPrice),
-      priceCurrency: exam.currency || 'INR',
-      availability: 'https://schema.org/InStock',
-      url: canonicalUrl,
-      seller: { '@id': `${baseUrl}/#organization` },
-    },
+    offers: buildDigitalOffer(baseUrl, canonicalUrl, exam.buyPrice, exam.currency || 'INR'),
   };
 
   if (exam.authorName.trim()) {
     courseNode.creator = { '@type': 'Person', name: exam.authorName.trim() };
   }
-  if (exam.tags.length > 0) {
-    courseNode.keywords = exam.tags.join(', ');
+  if (exam.type.trim()) {
+    courseNode.category = exam.type.trim();
+  }
+  if (alignedTags.length > 0) {
+    courseNode.keywords = alignedTags.join(', ');
   }
   if (exam.mocktestTitles.length > 0) {
     courseNode.hasPart = exam.mocktestTitles.map((mock) => ({
@@ -317,6 +445,12 @@ export function buildExamDetailGraph(baseUrl: string, exam: PublicExamPackDTO) {
     url: canonicalUrl,
     name: exam.title,
     description,
+    primaryImageOfPage: {
+      '@type': 'ImageObject',
+      url: thumbnailUrl,
+      width: 1200,
+      height: 630,
+    },
     isPartOf: { '@id': `${baseUrl}/#website` },
     breadcrumb: { '@id': `${canonicalUrl}#breadcrumb` },
     mainEntity: { '@id': `${canonicalUrl}#exam` },

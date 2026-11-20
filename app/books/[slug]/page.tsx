@@ -2,10 +2,20 @@ import React from 'react';
 import type { Metadata } from 'next';
 import { notFound, permanentRedirect } from 'next/navigation';
 import { DetailPageServerShell } from '@/components/templates/DetailPageServerShell';
-import { fetchPublishedBooks, lookupBookBySlug } from '@/lib/firebase/server-catalog';
+import {
+  fetchPublishedBooks,
+  fetchPublishedExams,
+  lookupBookBySlug,
+} from '@/lib/firebase/server-catalog';
 import { escapeJsonLd } from '@/lib/design-system/formatters';
 import { buildCleanMetaDescription } from '@/lib/seo/overview-markdown';
-import { buildBookDetailGraph, getCanonicalBaseUrl } from '@/lib/seo/structured-data';
+import { selectRelatedCatalogItems } from '@/lib/seo/related-items';
+import {
+  buildBookDetailGraph,
+  filterConflictingPriceTags,
+  getCanonicalBaseUrl,
+  getCatalogThumbnailUrl,
+} from '@/lib/seo/structured-data';
 
 export const revalidate = 120;
 
@@ -24,6 +34,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   }
 
   const book = lookup.item;
+  const baseUrl = getCanonicalBaseUrl();
   const description = buildCleanMetaDescription(
     book.seoDescription,
     book.fullDescription,
@@ -31,6 +42,8 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     160
   );
   const canonicalPath = `/books/${book.urlSlug}`;
+  const thumbnailUrl = getCatalogThumbnailUrl(baseUrl, 'books', book.urlSlug);
+  const alignedTags = filterConflictingPriceTags(book.tags, book.buyPrice);
 
   return {
     title: book.title,
@@ -53,12 +66,22 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
       description,
       url: canonicalPath,
       authors: book.authorName.trim() ? [book.authorName.trim()] : undefined,
-      tags: book.tags.length > 0 ? [...book.tags] : undefined,
+      tags: alignedTags.length > 0 ? alignedTags : undefined,
+      images: [
+        {
+          url: thumbnailUrl,
+          width: 1200,
+          height: 630,
+          type: 'image/png',
+          alt: book.title,
+        },
+      ],
     },
     twitter: {
       card: 'summary_large_image',
       title: book.title,
       description,
+      images: [thumbnailUrl],
     },
   };
 }
@@ -76,8 +99,11 @@ export default async function BookDetailPage({ params }: PageProps) {
   }
 
   const book = lookup.item;
-  const allBooks = await fetchPublishedBooks();
-  const relatedBooks = allBooks.filter((b) => b.id !== book.id).slice(0, 3);
+  const [allBooks, allExams] = await Promise.all([
+    fetchPublishedBooks(),
+    fetchPublishedExams(),
+  ]);
+  const relatedItems = selectRelatedCatalogItems(book, allBooks, allExams, 6);
   const graph = buildBookDetailGraph(getCanonicalBaseUrl(), book);
 
   return (
@@ -86,7 +112,7 @@ export default async function BookDetailPage({ params }: PageProps) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: escapeJsonLd(graph) }}
       />
-      <DetailPageServerShell item={book} relatedItems={relatedBooks} />
+      <DetailPageServerShell item={book} relatedItems={relatedItems} />
     </>
   );
 }
