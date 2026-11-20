@@ -61,10 +61,12 @@ export function getConfiguredReviewerEmail(): string {
 }
 
 export function getReviewerSessionSigningSecret(): string {
-  const dedicated = process.env.RAZORPAY_TEST_SESSION_SECRET?.trim();
+  const runtimeEnv: Record<string, string | undefined> = process.env;
+  const dedicated = runtimeEnv['RAZORPAY_TEST_SESSION_SECRET']?.trim();
   if (dedicated) return dedicated;
 
-  const razorpaySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
+  const razorpaySecret =
+    runtimeEnv['RAZORPAY_KEY_SECRET']?.trim() || runtimeEnv['RAZORPAY_SECRET']?.trim();
   if (razorpaySecret) {
     return crypto
       .createHmac('sha256', razorpaySecret)

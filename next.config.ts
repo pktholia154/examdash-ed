@@ -1,9 +1,17 @@
 import type { NextConfig } from 'next';
 
+const isProd = process.env.NODE_ENV === 'production';
+// In `next dev`, route chunks (`app/page.js`, `app/layout.js`, `app/books/[slug]/page.js`,
+// `app-pages-internals.js`) have unhashed filenames. Assigning a per-boot `deploymentId`
+// appends `?dpl=dev-<ts>` to every static chunk URL and RSC manifest entry in development,
+// guaranteeing browsers and cross-origin preview iframes never reuse stale cached chunks.
+const devDeploymentId = isProd ? undefined : `dev-${Date.now()}`;
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   compress: true,
   poweredByHeader: false,
+  deploymentId: isProd ? process.env.NEXT_DEPLOYMENT_ID || undefined : devDeploymentId,
   eslint: {
     ignoreDuringBuilds: true,
   },
@@ -19,7 +27,9 @@ const nextConfig: NextConfig = {
         headers: [
           {
             key: 'Cache-Control',
-            value: 'public, max-age=31536000, immutable',
+            value: isProd
+              ? 'public, max-age=31536000, immutable'
+              : 'no-store, must-revalidate',
           },
         ],
       },

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getRazorpayServerConfig,
+  getRazorpayWebhookSecret,
   RazorpayWebhookPayloadSchema,
   verifyRazorpayWebhookSignature,
 } from '@/core/payments/razorpay';
@@ -34,7 +35,7 @@ function markEventProcessed(eventId: string): boolean {
  */
 export async function POST(req: NextRequest) {
   try {
-    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim();
+    const webhookSecret = getRazorpayWebhookSecret();
     if (!webhookSecret) {
       return NextResponse.json(
         { error: 'Razorpay webhook secret is not configured on the server.' },

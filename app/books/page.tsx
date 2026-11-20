@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { CollectionHubServerShell } from '@/components/templates/CollectionHubServerShell';
 import { fetchPublishedBooks } from '@/lib/firebase/server-catalog';
+import { fetchCatalogRatingSummaries } from '@/lib/firebase/server-reviews';
 import { escapeJsonLd } from '@/lib/design-system/formatters';
 import { buildHubCollectionGraph, getCanonicalBaseUrl } from '@/lib/seo/structured-data';
 
@@ -52,7 +53,10 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function BooksHubPage() {
-  const books = await fetchPublishedBooks();
+  const [books, ratingSummaries] = await Promise.all([
+    fetchPublishedBooks(),
+    fetchCatalogRatingSummaries(),
+  ]);
   // Anti-Soft-404 Gate: return genuine HTTP 404 when 0 published books exist
   if (books.length === 0) {
     notFound();
@@ -76,6 +80,7 @@ export default async function BooksHubPage() {
         heading={HUB_TITLE}
         intro={HUB_DESCRIPTION}
         items={books}
+        ratingSummaries={ratingSummaries}
       />
     </>
   );

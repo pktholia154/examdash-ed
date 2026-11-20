@@ -10,6 +10,8 @@ import type { PublicCatalogBaseDTO } from '@/lib/design-system/types';
 export interface ContentCollectionSectionItem {
   readonly dto: PublicCatalogBaseDTO;
   readonly subtitle: string;
+  readonly ratingValue?: number;
+  readonly ratingCount?: number;
 }
 
 export interface ContentCollectionSectionProps {
@@ -103,7 +105,7 @@ export function ContentCollectionSection({
           data-testid={`collection-grid-${contentType}`}
           className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
         >
-          {items.map(({ dto, subtitle }) => (
+          {items.map(({ dto, subtitle, ratingValue, ratingCount }) => (
             <CatalogItemCard
               key={dto.id}
               id={dto.id}
@@ -114,6 +116,8 @@ export function ContentCollectionSection({
               buyPrice={dto.buyPrice}
               listPrice={dto.listPrice}
               currency={dto.currency}
+              ratingValue={ratingValue}
+              ratingCount={ratingCount}
               viewMode="grid"
               inCart={isInCart(dto.contentType, dto.id)}
               onAddToCart={() => onAddToCart(dto)}
@@ -125,7 +129,7 @@ export function ContentCollectionSection({
           data-testid={`collection-list-${contentType}`}
           className="flex flex-col gap-3"
         >
-          {items.map(({ dto, subtitle }) => (
+          {items.map(({ dto, subtitle, ratingValue, ratingCount }) => (
             <CatalogItemCard
               key={dto.id}
               id={dto.id}
@@ -136,6 +140,8 @@ export function ContentCollectionSection({
               buyPrice={dto.buyPrice}
               listPrice={dto.listPrice}
               currency={dto.currency}
+              ratingValue={ratingValue}
+              ratingCount={ratingCount}
               viewMode="list"
               inCart={isInCart(dto.contentType, dto.id)}
               onAddToCart={() => onAddToCart(dto)}

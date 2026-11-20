@@ -139,6 +139,39 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "uid", "bookId", "format", "mode", "pageIndex", "totalPages", "offsetRatio", "blockIndex", "zoomScale", "progressPercent", "updatedAt"]
+    },
+    "ProductReview": {
+      "title": "ProductReview",
+      "description": "Genuine user-authored rating and review for a published book, exam pack, or quizbook. Strictly one review per user per product, zero PII.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "contentType": { "type": "string", "enum": ["books", "exams", "quizbooks"] },
+        "itemId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productKey": { "type": "string", "minLength": 3, "maxLength": 160, "pattern": "^(books|exams|quizbooks):[a-zA-Z0-9_\\-]+$" },
+        "rating": { "type": "number" },
+        "title": { "type": "string", "maxLength": 120 },
+        "body": { "type": "string", "minLength": 10, "maxLength": 2000 },
+        "authorName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "verifiedPurchase": { "type": "boolean" },
+        "helpfulCount": { "type": "number" },
+        "status": { "type": "string", "enum": ["published"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "uid", "contentType", "itemId", "productKey", "rating", "title", "body", "authorName", "verifiedPurchase", "helpfulCount", "status", "createdAt", "updatedAt"]
+    },
+    "ReviewHelpfulVote": {
+      "title": "ReviewHelpfulVote",
+      "description": "One-per-user helpful endorsement marker for a published product review, paired atomically with helpfulCount.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reviewId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "reviewId", "createdAt"]
     }
   },
   "firestore": {
@@ -149,6 +182,14 @@
     "/ExamPackDocument/{examId}": {
       "schema": { "$ref": "#/entities/ExamPackDocument" },
       "description": "Public catalog of published online exam packs and mock test series; writes restricted to admins."
+    },
+    "/productReviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/ProductReview" },
+      "description": "Genuine published user ratings and reviews across books, exam packs, and quizbooks; deterministic doc ID enforces 1 review per user per product."
+    },
+    "/productReviews/{reviewId}/helpfulVotes/{voterUid}": {
+      "schema": { "$ref": "#/entities/ReviewHelpfulVote" },
+      "description": "Per-user helpful vote records paired atomically with parent review helpfulCount."
     },
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfilePrivate" },

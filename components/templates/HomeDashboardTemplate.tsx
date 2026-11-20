@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { TopHeader } from '@/components/organisms/TopHeader';
 import { OfflineBanner } from '@/components/organisms/OfflineBanner';
+import { CartDrawer } from '@/components/organisms/CartDrawer';
 import { SearchInputBar, type ContentFilterOption } from '@/components/molecules/SearchInputBar';
 import { PwaInstallBanner } from '@/components/molecules/PwaInstallBanner';
 import { UserAnalyticsStrip } from '@/components/organisms/UserAnalyticsStrip';
@@ -17,15 +17,12 @@ import { useAppSession } from '@/components/providers/AppSessionProvider';
 import { filterCatalogItems } from '@/lib/design-system/formatters';
 import type { ViewMode } from '@/lib/design-system/tokens';
 import type { PublicBookDTO, PublicExamPackDTO } from '@/lib/design-system/types';
-
-const LazyCartDrawer = dynamic(
-  () => import('@/components/organisms/CartDrawer').then((m) => m.CartDrawer),
-  { ssr: false }
-);
+import type { ProductRatingSummary } from '@/core/reviews/schema';
 
 export interface HomeDashboardTemplateProps {
   readonly books: readonly PublicBookDTO[];
   readonly exams: readonly PublicExamPackDTO[];
+  readonly ratingSummaries?: Readonly<Record<string, ProductRatingSummary>>;
   readonly catalogError: string | null;
 }
 
@@ -44,6 +41,7 @@ function formatExamSubtitle(exam: PublicExamPackDTO): string {
 export function HomeDashboardTemplate({
   books,
   exams,
+  ratingSummaries,
   catalogError,
 }: HomeDashboardTemplateProps) {
   const router = useRouter();
@@ -95,20 +93,30 @@ export function HomeDashboardTemplate({
 
   const filteredBooks = useMemo<ContentCollectionSectionItem[]>(
     () =>
-      filterCatalogItems(books, searchQuery).map((dto) => ({
-        dto,
-        subtitle: formatBookSubtitle(dto),
-      })),
-    [books, searchQuery]
+      filterCatalogItems(books, searchQuery).map((dto) => {
+        const rating = ratingSummaries?.[`books:${dto.id}`];
+        return {
+          dto,
+          subtitle: formatBookSubtitle(dto),
+          ratingValue: rating?.ratingValue,
+          ratingCount: rating?.ratingCount,
+        };
+      }),
+    [books, ratingSummaries, searchQuery]
   );
 
   const filteredExams = useMemo<ContentCollectionSectionItem[]>(
     () =>
-      filterCatalogItems(exams, searchQuery).map((dto) => ({
-        dto,
-        subtitle: formatExamSubtitle(dto),
-      })),
-    [exams, searchQuery]
+      filterCatalogItems(exams, searchQuery).map((dto) => {
+        const rating = ratingSummaries?.[`exams:${dto.id}`];
+        return {
+          dto,
+          subtitle: formatExamSubtitle(dto),
+          ratingValue: rating?.ratingValue,
+          ratingCount: rating?.ratingCount,
+        };
+      }),
+    [exams, ratingSummaries, searchQuery]
   );
 
   const showBooks = activeFilter === 'all' || activeFilter === 'books';
@@ -225,7 +233,7 @@ export function HomeDashboardTemplate({
       <SiteFooter />
 
       {cartOpen && (
-        <LazyCartDrawer
+        <CartDrawer
           open={cartOpen}
           items={cartItems}
           totals={cartTotals}

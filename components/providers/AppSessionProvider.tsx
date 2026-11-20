@@ -35,7 +35,7 @@ export interface SessionUser {
   readonly displayName: string | null;
   readonly photoURL: string | null;
   readonly authProvider: 'firebase-google' | 'reviewer-test';
-  readonly getIdToken: () => Promise<string>;
+  readonly getIdToken: (forceRefresh?: boolean) => Promise<string>;
 }
 
 interface ReviewerSessionState {
@@ -273,7 +273,7 @@ function toFirebaseSessionUser(fbUser: FirebaseAuthUser): SessionUser {
     displayName: fbUser.displayName,
     photoURL: fbUser.photoURL,
     authProvider: 'firebase-google',
-    getIdToken: () => fbUser.getIdToken(),
+    getIdToken: (forceRefresh?: boolean) => fbUser.getIdToken(forceRefresh),
   };
 }
 

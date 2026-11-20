@@ -37,6 +37,7 @@ import {
   webPreferencesAdapter,
 } from '@/core/adapters/platform';
 import type { PdfWorkerRequest, PdfWorkerResponse } from '@/core/readers/pdf-render.worker';
+import { createMainThreadPdfBridge, type PdfBridge } from '@/core/readers/pdf-mainthread-fallback';
 import { formatPrice } from '@/lib/design-system/formatters';
 import type { ReaderMode, ReadingProgressRecord, ReadingTheme } from '@/lib/design-system/types';
 
@@ -48,10 +49,11 @@ export interface PdfReaderModalProps {
   readonly currency: string;
   readonly userEmail: string | null;
   readonly entitlementProof: string | null;
-  readonly getAuthToken: (() => Promise<string>) | null;
+  readonly getAuthToken: ((forceRefresh?: boolean) => Promise<string>) | null;
   readonly initialProgress: ReadingProgressRecord | null;
   readonly isInCart: boolean;
   readonly checkoutBusy: boolean;
+  readonly checkoutError?: string | null;
   readonly onSaveProgress: (record: Omit<ReadingProgressRecord, 'id' | 'updatedAt'>) => void;
   readonly onAddToCart?: () => void;
   readonly onBuyNow?: () => void;
@@ -76,6 +78,7 @@ export function PdfReaderModal({
   initialProgress,
   isInCart,
   checkoutBusy,
+  checkoutError = null,
   onSaveProgress,
   onAddToCart,
   onBuyNow,
@@ -84,12 +87,15 @@ export function PdfReaderModal({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const pageStackRef = useRef<HTMLDivElement | null>(null);
-  const workerRef = useRef<Worker | null>(null);
+  const workerRef = useRef<PdfBridge | null>(null);
   const canvasMapRef = useRef<Map<number, HTMLCanvasElement>>(new Map());
   const pageWrapperMapRef = useRef<Map<number, HTMLDivElement>>(new Map());
   const renderedWidthMapRef = useRef<Map<number, number>>(new Map());
+  const retriedRenderPagesRef = useRef<Set<number>>(new Set());
   const requestIdRef = useRef(0);
   const openRetriedAuthRef = useRef(false);
+  const usedMainThreadFallbackRef = useRef(false);
+  const docOpenedRef = useRef(false);
   const lastTapTimeRef = useRef(0);
   const pinchStartDistRef = useRef<number | null>(null);
   const pinchStartScaleRef = useRef(1);
@@ -195,7 +201,7 @@ export function PdfReaderModal({
       const mobile = window.innerWidth < 768;
       setIsMobile(mobile);
       const horizontalPad = mobile ? 20 : 64;
-      setContainerWidth(Math.max(280, Math.min(920, w - horizontalPad)));
+      setContainerWidth(Math.max(240, Math.min(920, w - horizontalPad)));
     };
 
     updateDims();
@@ -243,19 +249,23 @@ export function PdfReaderModal({
     renderedWidthMapRef.current.delete(pageNumber);
   }, []);
 
-  // Open document in Web Worker (checks offline storage first, falls back to authenticated proxy)
+  // Open document in active PDF bridge (checks offline storage first, falls back to authenticated proxy)
   const openDocumentInWorker = useCallback(
-    async (worker: Worker, forceRefreshToken = false) => {
-      setLoading(true);
-      setLoadError(null);
+    async (bridge: PdfBridge, forceRefreshToken = false) => {
       renderedWidthMapRef.current.clear();
+      retriedRenderPagesRef.current.clear();
 
       const reqId = ++requestIdRef.current;
       const wasmUrl = `${window.location.origin}/wasm/pdfium.esm.wasm`;
-      const maxRenderPixels = window.innerWidth < 768 ? 5_000_000 : 8_000_000;
+      const maxRenderPixels = window.innerWidth < 768 ? 4_000_000 : 8_000_000;
 
-      // 1. Check offline OPFS / IndexedDB vault first
-      const offlineBuf = await webOfflineStorageAdapter.readBinary(makeOfflinePdfKey(bookId, mode));
+      // 1. Check offline OPFS / IndexedDB vault first (guarded for Safari private mode)
+      let offlineBuf: ArrayBuffer | null = null;
+      try {
+        offlineBuf = await webOfflineStorageAdapter.readBinary(makeOfflinePdfKey(bookId, mode));
+      } catch {
+        offlineBuf = null;
+      }
       if (offlineBuf && offlineBuf.byteLength > 0) {
         const msg: PdfWorkerRequest = {
           type: 'OPEN_BUFFER',
@@ -264,7 +274,7 @@ export function PdfReaderModal({
           wasmUrl,
           maxRenderPixels,
         };
-        worker.postMessage(msg, [offlineBuf]);
+        bridge.postMessage(msg, [offlineBuf]);
         return;
       }
 
@@ -273,10 +283,10 @@ export function PdfReaderModal({
       if (mode === 'full') {
         if (getAuthToken) {
           try {
-            const token = await getAuthToken();
+            const token = await getAuthToken(forceRefreshToken);
             headers.Authorization = `Bearer ${token}`;
           } catch {
-            // Handled by 401 recovery
+            // Handled by 401 recovery or explicit server error
           }
         }
         if (entitlementProof) {
@@ -298,113 +308,182 @@ export function PdfReaderModal({
         fetchTimeoutMs: 30_000,
         fetchMaxBytes: 60 * 1024 * 1024,
       };
-      worker.postMessage(msg);
+      bridge.postMessage(msg);
     },
     [bookId, entitlementProof, getAuthToken, mode]
   );
 
-  // Lifecycle: instantiate single reusable PDFium WASM Web Worker & strictly destroy on unmount
+  // Lifecycle: instantiate off-main-thread classic PDFium WASM Web Worker with automatic
+  // main-thread WASM fallback for restricted mobile WebViews or worker load failures.
   useEffect(() => {
     openRetriedAuthRef.current = false;
-    const worker = new Worker(
-      new URL('../../core/readers/pdf-render.worker.ts', import.meta.url),
-      { type: 'module' }
-    );
-    workerRef.current = worker;
+    usedMainThreadFallbackRef.current = false;
+    docOpenedRef.current = false;
+    let disposed = false;
 
-    worker.onmessage = (event: MessageEvent<PdfWorkerResponse>) => {
-      const msg = event.data;
+    const attachBridgeHandlers = (bridge: PdfBridge, isPrimaryWorker: boolean) => {
+      bridge.onmessage = (event: { data: PdfWorkerResponse }) => {
+        if (disposed) return;
+        const msg = event.data;
 
-      if (msg.type === 'OPENED') {
-        setPageMetrics(msg.pages);
-        setLoading(false);
-        setLoadError(null);
-        lastSavedStateRef.current.totalPages = msg.pageCount;
+        if (msg.type === 'OPENED') {
+          docOpenedRef.current = true;
+          setPageMetrics(msg.pages);
+          setLoading(false);
+          setLoadError(null);
+          lastSavedStateRef.current.totalPages = msg.pageCount;
 
-        // Restore resume page after layout paints
-        const resumePage = Math.max(
-          1,
-          Math.min(msg.pageCount, (initialProgress?.pageIndex ?? 0) + 1)
-        );
-        setCurrentPage(resumePage);
-        if (resumePage > 1) {
-          requestAnimationFrame(() => {
-            const wrapper = pageWrapperMapRef.current.get(resumePage);
-            if (wrapper && scrollContainerRef.current) {
-              const offsetY =
-                wrapper.offsetTop +
-                Math.round(wrapper.offsetHeight * (initialProgress?.offsetRatio ?? 0));
-              scrollContainerRef.current.scrollTo({ top: offsetY, behavior: 'auto' });
-            }
-          });
+          // Restore resume page after layout paints
+          const resumePage = Math.max(
+            1,
+            Math.min(msg.pageCount, (initialProgress?.pageIndex ?? 0) + 1)
+          );
+          setCurrentPage(resumePage);
+          if (resumePage > 1) {
+            requestAnimationFrame(() => {
+              const wrapper = pageWrapperMapRef.current.get(resumePage);
+              if (wrapper && scrollContainerRef.current) {
+                const offsetY =
+                  wrapper.offsetTop +
+                  Math.round(wrapper.offsetHeight * (initialProgress?.offsetRatio ?? 0));
+                scrollContainerRef.current.scrollTo({ top: offsetY, behavior: 'auto' });
+              }
+            });
+          }
+          return;
         }
-        return;
-      }
 
-      if (msg.type === 'OPEN_ERROR') {
-        // Intercept HTTP 401/403 on expired token and silently retry once
-        if (
-          (msg.statusCode === 401 || msg.statusCode === 403) &&
-          mode === 'full' &&
-          !openRetriedAuthRef.current &&
-          getAuthToken
-        ) {
-          openRetriedAuthRef.current = true;
-          void openDocumentInWorker(worker, true);
+        if (msg.type === 'OPEN_ERROR') {
+          // Intercept HTTP 401/403 on expired token and silently retry once with a refreshed token
+          if (
+            (msg.statusCode === 401 || msg.statusCode === 403) &&
+            mode === 'full' &&
+            !openRetriedAuthRef.current &&
+            getAuthToken
+          ) {
+            openRetriedAuthRef.current = true;
+            void openDocumentInWorker(bridge, true).catch((err) => {
+              if (disposed) return;
+              setLoading(false);
+              setLoadError(err instanceof Error ? err.message : 'Unable to load PDF document.');
+            });
+            return;
+          }
+          setLoading(false);
+          setLoadError(msg.message || 'Unable to load PDF document.');
+          return;
+        }
+
+        if (msg.type === 'RENDERED_BITMAP') {
+          const canvas = canvasMapRef.current.get(msg.pageNumber);
+          if (canvas) {
+            canvas.width = msg.width;
+            canvas.height = msg.height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(msg.bitmap, 0, 0);
+              paintPaidWatermark(ctx, msg.width, msg.height);
+            }
+            renderedWidthMapRef.current.set(msg.pageNumber, msg.width);
+            setRenderedCount(renderedWidthMapRef.current.size);
+          }
+          msg.bitmap.close();
+          return;
+        }
+
+        if (msg.type === 'RENDERED_RGBA') {
+          const canvas = canvasMapRef.current.get(msg.pageNumber);
+          if (canvas) {
+            canvas.width = msg.width;
+            canvas.height = msg.height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              const imgData = new ImageData(
+                new Uint8ClampedArray(msg.rgbaBuffer),
+                msg.width,
+                msg.height
+              );
+              ctx.putImageData(imgData, 0, 0);
+              paintPaidWatermark(ctx, msg.width, msg.height);
+            }
+            renderedWidthMapRef.current.set(msg.pageNumber, msg.width);
+            setRenderedCount(renderedWidthMapRef.current.size);
+          }
+          return;
+        }
+
+        if (msg.type === 'RENDER_ERROR') {
+          // Retry once at a conservative width (helps low-memory mobile GPUs)
+          if (!retriedRenderPagesRef.current.has(msg.pageNumber)) {
+            retriedRenderPagesRef.current.add(msg.pageNumber);
+            const reqId = ++requestIdRef.current;
+            bridge.postMessage({
+              type: 'RENDER_PAGE',
+              requestId: reqId,
+              pageNumber: msg.pageNumber,
+              targetWidth: 640,
+              priority: 0,
+            });
+          }
+        }
+      };
+
+      bridge.onerror = (err) => {
+        if (disposed) return;
+        // Seamless fallback to main-thread WASM bridge if the Web Worker fails to boot
+        if (isPrimaryWorker && !docOpenedRef.current && !usedMainThreadFallbackRef.current) {
+          usedMainThreadFallbackRef.current = true;
+          try {
+            bridge.terminate();
+          } catch {
+            // Ignore termination error
+          }
+          const fallback = createMainThreadPdfBridge();
+          workerRef.current = fallback;
+          attachBridgeHandlers(fallback, false);
+          void openDocumentInWorker(fallback).catch((err) => {
+            if (disposed) return;
+            setLoading(false);
+            setLoadError(err instanceof Error ? err.message : 'Unable to load PDF document.');
+          });
           return;
         }
         setLoading(false);
-        setLoadError(msg.message || 'Unable to load PDF document.');
-        return;
-      }
-
-      if (msg.type === 'RENDERED_BITMAP') {
-        const canvas = canvasMapRef.current.get(msg.pageNumber);
-        if (canvas) {
-          canvas.width = msg.width;
-          canvas.height = msg.height;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(msg.bitmap, 0, 0);
-            paintPaidWatermark(ctx, msg.width, msg.height);
-          }
-          renderedWidthMapRef.current.set(msg.pageNumber, msg.width);
-          setRenderedCount(renderedWidthMapRef.current.size);
-        }
-        msg.bitmap.close();
-        return;
-      }
-
-      if (msg.type === 'RENDERED_RGBA') {
-        const canvas = canvasMapRef.current.get(msg.pageNumber);
-        if (canvas) {
-          canvas.width = msg.width;
-          canvas.height = msg.height;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            const imgData = new ImageData(
-              new Uint8ClampedArray(msg.rgbaBuffer),
-              msg.width,
-              msg.height
-            );
-            ctx.putImageData(imgData, 0, 0);
-            paintPaidWatermark(ctx, msg.width, msg.height);
-          }
-          renderedWidthMapRef.current.set(msg.pageNumber, msg.width);
-          setRenderedCount(renderedWidthMapRef.current.size);
-        }
-      }
+        setLoadError(err?.message || 'PDF render engine encountered an error.');
+      };
     };
 
-    worker.onerror = (err) => {
-      setLoading(false);
-      setLoadError(err.message || 'PDF render worker encountered an error.');
-    };
+    let activeBridge: PdfBridge;
+    let isPrimaryWorker = false;
+    try {
+      if (typeof Worker !== 'undefined') {
+        // Classic webpack worker (omit `{ type: 'module' }`) maximizes iOS Safari / WebView compatibility
+        const nativeWorker = new Worker(
+          new URL('../../core/readers/pdf-render.worker.ts', import.meta.url)
+        );
+        activeBridge = nativeWorker as unknown as PdfBridge;
+        isPrimaryWorker = true;
+      } else {
+        usedMainThreadFallbackRef.current = true;
+        activeBridge = createMainThreadPdfBridge();
+      }
+    } catch {
+      usedMainThreadFallbackRef.current = true;
+      activeBridge = createMainThreadPdfBridge();
+    }
+
+    workerRef.current = activeBridge;
+    attachBridgeHandlers(activeBridge, isPrimaryWorker);
 
     const canvasMap = canvasMapRef.current;
-    void openDocumentInWorker(worker);
+    void openDocumentInWorker(activeBridge).catch((err) => {
+      if (disposed) return;
+      setLoading(false);
+      setLoadError(err instanceof Error ? err.message : 'Unable to load PDF document.');
+    });
 
     return () => {
+      disposed = true;
       if (progressTimerRef.current !== null) window.clearTimeout(progressTimerRef.current);
       if (zoomSettleTimerRef.current !== null) window.clearTimeout(zoomSettleTimerRef.current);
       if (rafZoomRef.current !== null) cancelAnimationFrame(rafZoomRef.current);
@@ -415,13 +494,22 @@ export function PdfReaderModal({
         evictCanvas(pageNumber);
       }
 
-      // Strictly destroy PDFium doc + WASM engine + terminate Worker
-      try {
-        worker.postMessage({ type: 'DESTROY' } satisfies PdfWorkerRequest);
-      } catch {
-        // Ignore if worker already terminated
+      // Strictly destroy PDFium doc + WASM engine + terminate active bridge
+      const currentBridge = workerRef.current;
+      if (currentBridge) {
+        try {
+          currentBridge.postMessage({ type: 'DESTROY' } satisfies PdfWorkerRequest);
+        } catch {
+          // Ignore if already terminated
+        }
+        setTimeout(() => {
+          try {
+            currentBridge.terminate();
+          } catch {
+            // Ignore
+          }
+        }, 50);
       }
-      setTimeout(() => worker.terminate(), 50);
       workerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -641,6 +729,10 @@ export function PdfReaderModal({
         pinchStartDistRef.current = Math.hypot(dx, dy);
         pinchStartScaleRef.current = zoomScale;
       } else if (e.touches.length === 1) {
+        const target = e.target as HTMLElement | null;
+        if (target?.closest('button, a, input, label, select')) {
+          return;
+        }
         const now = Date.now();
         if (now - lastTapTimeRef.current < 280) {
           applyTwoPhaseZoom(zoomScale > 1.25 ? 1.0 : 1.75, true);
@@ -953,7 +1045,15 @@ export function PdfReaderModal({
             <div className="mt-5 flex justify-center gap-3">
               <button
                 type="button"
-                onClick={() => workerRef.current && void openDocumentInWorker(workerRef.current, true)}
+                onClick={() => {
+                  if (!workerRef.current) return;
+                  setLoading(true);
+                  setLoadError(null);
+                  void openDocumentInWorker(workerRef.current, true).catch((err) => {
+                    setLoading(false);
+                    setLoadError(err instanceof Error ? err.message : 'Unable to load PDF document.');
+                  });
+                }}
                 className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-[var(--brand-ink)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--brand-ink-hover)]"
               >
                 <RotateCcw className="h-4 w-4" aria-hidden="true" />
@@ -1053,6 +1153,14 @@ export function PdfReaderModal({
                     </button>
                   )}
                 </div>
+                {checkoutError && (
+                  <p
+                    role="alert"
+                    className="mx-auto mt-4 max-w-md rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800"
+                  >
+                    {checkoutError}
+                  </p>
+                )}
               </section>
             )}
           </div>

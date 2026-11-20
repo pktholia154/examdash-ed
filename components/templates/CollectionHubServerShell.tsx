@@ -4,8 +4,10 @@ import { ArrowLeft } from 'lucide-react';
 import { SiteChromeShell } from '@/components/organisms/SiteChromeShell';
 import { MonogramThumbnail } from '@/components/atoms/MonogramThumbnail';
 import { PriceDisplay } from '@/components/atoms/PriceDisplay';
+import { StarRatingDisplay } from '@/components/atoms/StarRatingDisplay';
 import { AddToCartButtonLeaf } from '@/components/atoms/AddToCartButtonLeaf';
 import { getContentTypeConfig } from '@/lib/design-system/content-types';
+import type { ProductRatingSummary } from '@/core/reviews/schema';
 import type { ContentTypeKey } from '@/lib/design-system/tokens';
 import type { PublicBookDTO, PublicExamPackDTO } from '@/lib/design-system/types';
 
@@ -14,6 +16,7 @@ export interface CollectionHubServerShellProps {
   readonly heading: string;
   readonly intro: string;
   readonly items: readonly (PublicBookDTO | PublicExamPackDTO)[];
+  readonly ratingSummaries?: Readonly<Record<string, ProductRatingSummary>>;
 }
 
 function buildSubtitle(item: PublicBookDTO | PublicExamPackDTO): string {
@@ -35,6 +38,7 @@ export function CollectionHubServerShell({
   heading,
   intro,
   items,
+  ratingSummaries,
 }: CollectionHubServerShellProps) {
   const config = getContentTypeConfig(contentType);
 
@@ -78,6 +82,7 @@ export function CollectionHubServerShell({
             {items.map((item) => {
               const href = `${config.routePrefix}/${item.urlSlug}`;
               const subtitle = buildSubtitle(item);
+              const rating = ratingSummaries?.[`${item.contentType}:${item.id}`];
               return (
                 <article
                   key={item.id}
@@ -96,6 +101,14 @@ export function CollectionHubServerShell({
                       </h2>
                       {subtitle && (
                         <p className="truncate text-xs text-[var(--text-muted)]">{subtitle}</p>
+                      )}
+                      {rating && rating.ratingCount > 0 && (
+                        <StarRatingDisplay
+                          rating={rating.ratingValue}
+                          size="xs"
+                          showNumeric
+                          count={rating.ratingCount}
+                        />
                       )}
                       {item.seoDescription && (
                         <p className="line-clamp-2 text-xs leading-relaxed text-[var(--text-secondary)]">

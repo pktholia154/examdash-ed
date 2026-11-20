@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyEntitlementProof } from '@/core/payments/razorpay';
+import { getRazorpayKeySecret, verifyEntitlementProof } from '@/core/payments/razorpay';
 import {
   CANONICAL_SAMPLE_EXAM_SET,
   normalizeExamSetsPayload,
@@ -128,7 +128,7 @@ export async function GET(
     }
 
     // --- FULL PAID MULTI-SET JSON ACCESS (STRICT SERVER ENFORCEMENT) ---
-    const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim() ?? '';
+    const keySecret = getRazorpayKeySecret();
     const entitlementProof = req.headers.get('x-entitlement-proof')?.trim() ?? '';
 
     if (!token) {

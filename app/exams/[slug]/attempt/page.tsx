@@ -1,6 +1,7 @@
 import React, { Suspense } from 'react';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
+import 'katex/dist/katex.min.css';
 import { fetchExamBySlug } from '@/lib/firebase/server-catalog';
 import { ExamAttemptPageClient } from '@/components/exam/ExamAttemptPageClient';
 

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Check, ShoppingCart } from 'lucide-react';
 import { MonogramThumbnail } from '@/components/atoms/MonogramThumbnail';
 import { PriceDisplay } from '@/components/atoms/PriceDisplay';
+import { StarRatingDisplay } from '@/components/atoms/StarRatingDisplay';
 import { getContentTypeConfig } from '@/lib/design-system/content-types';
 import type { ContentTypeKey, ViewMode } from '@/lib/design-system/tokens';
 
@@ -17,6 +18,8 @@ export interface CatalogItemCardProps {
   readonly buyPrice: number;
   readonly listPrice: number;
   readonly currency: string;
+  readonly ratingValue?: number;
+  readonly ratingCount?: number;
   readonly viewMode: ViewMode;
   readonly inCart: boolean;
   readonly onAddToCart: () => void;
@@ -34,12 +37,15 @@ export function CatalogItemCard({
   buyPrice,
   listPrice,
   currency,
+  ratingValue = 0,
+  ratingCount = 0,
   viewMode,
   inCart,
   onAddToCart,
 }: CatalogItemCardProps) {
   const config = getContentTypeConfig(contentType);
   const href = `${config.routePrefix}/${urlSlug}`;
+  const hasGenuineRating = ratingCount > 0 && ratingValue >= 1;
 
   if (viewMode === 'list') {
     return (
@@ -57,6 +63,16 @@ export function CatalogItemCard({
             </h3>
             {subtitle && (
               <p className="mt-1 truncate text-xs text-[var(--text-muted)]">{subtitle}</p>
+            )}
+            {hasGenuineRating && (
+              <div className="mt-1.5">
+                <StarRatingDisplay
+                  rating={ratingValue}
+                  size="xs"
+                  showNumeric
+                  count={ratingCount}
+                />
+              </div>
             )}
           </div>
 
@@ -101,6 +117,16 @@ export function CatalogItemCard({
           </h3>
           {subtitle && (
             <p className="mt-1.5 truncate text-xs text-[var(--text-muted)]">{subtitle}</p>
+          )}
+          {hasGenuineRating && (
+            <div className="mt-2">
+              <StarRatingDisplay
+                rating={ratingValue}
+                size="xs"
+                showNumeric
+                count={ratingCount}
+              />
+            </div>
           )}
         </div>
 

@@ -186,6 +186,70 @@ test('JSON-LD graphs emit Product/Book & Product/Course rich results with PNG th
   ]);
 });
 
+test('JSON-LD emits AggregateRating and Review ONLY when genuine user reviews exist', () => {
+  const baseUrl = 'https://exam-dash.com';
+
+  // With 0 genuine reviews: MUST omit both aggregateRating and review
+  const emptyGraph = buildBookDetailGraph(baseUrl, SAMPLE_BOOK, {
+    summary: { ratingValue: 0, ratingCount: 0, reviewCount: 0 },
+    reviews: [],
+  });
+  const emptyBookNode = emptyGraph['@graph'].find(
+    (n) => Array.isArray(n['@type']) && n['@type'].includes('Book')
+  ) as Record<string, unknown>;
+  assert.equal('aggregateRating' in emptyBookNode, false);
+  assert.equal('review' in emptyBookNode, false);
+
+  // With genuine published reviews: MUST emit valid AggregateRating and Review[]
+  const populatedGraph = buildBookDetailGraph(baseUrl, SAMPLE_BOOK, {
+    summary: { ratingValue: 4.5, ratingCount: 2, reviewCount: 2 },
+    reviews: [
+      {
+        id: 'books_B1_u1',
+        rating: 5,
+        title: 'Excellent MCQ coverage',
+        body: 'Covers modern and ancient Indian history thoroughly with clean explanations.',
+        authorName: 'Aarav Sharma',
+        createdAt: '2026-11-19T12:00:00.000Z',
+      },
+      {
+        id: 'books_B1_u2',
+        rating: 4,
+        title: '',
+        body: 'Very concise question bank for last-week exam revision.',
+        authorName: 'Priya Nair',
+        createdAt: '2026-11-19T14:30:00.000Z',
+      },
+    ],
+  });
+
+  const populatedBookNode = populatedGraph['@graph'].find(
+    (n) => Array.isArray(n['@type']) && n['@type'].includes('Book')
+  ) as Record<string, unknown>;
+
+  assert.deepEqual(populatedBookNode.aggregateRating, {
+    '@type': 'AggregateRating',
+    ratingValue: 4.5,
+    reviewCount: 2,
+    ratingCount: 2,
+    bestRating: 5,
+    worstRating: 1,
+  });
+
+  const emittedReviews = populatedBookNode.review as Array<Record<string, unknown>>;
+  assert.equal(emittedReviews.length, 2);
+  assert.equal(emittedReviews[0]['@type'], 'Review');
+  assert.deepEqual(emittedReviews[0].author, { '@type': 'Person', name: 'Aarav Sharma' });
+  assert.equal(emittedReviews[0].name, 'Excellent MCQ coverage');
+  assert.deepEqual(emittedReviews[0].reviewRating, {
+    '@type': 'Rating',
+    ratingValue: 5,
+    bestRating: 5,
+    worstRating: 1,
+  });
+  assert.equal('name' in emittedReviews[1], false);
+});
+
 test('selectRelatedCatalogItems ranks same-category items first and backfills cross-collection up to limit', () => {
   const book2: PublicBookDTO = { ...SAMPLE_BOOK, id: 'B2', urlSlug: 'b2', title: 'Book 2', type: 'Question Bank' };
   const book3: PublicBookDTO = { ...SAMPLE_BOOK, id: 'B3', urlSlug: 'b3', title: 'Book 3', type: 'Notes' };

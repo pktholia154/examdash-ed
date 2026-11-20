@@ -128,6 +128,13 @@ export function middleware(req: NextRequest) {
     return response;
   }
 
+  // In development (`next dev`), disable HTML edge/browser caching so document
+  // responses always match the live server's `?dpl=dev-...` chunk graph.
+  if (process.env.NODE_ENV !== 'production') {
+    response.headers.set('Cache-Control', 'private, no-cache, no-store, max-age=0');
+    return response;
+  }
+
   // 5. Private / interactive non-indexable paths
   if (isPrivateOrNonIndexablePath(pathname)) {
     response.headers.set('Cache-Control', 'private, no-cache, no-store, max-age=0');

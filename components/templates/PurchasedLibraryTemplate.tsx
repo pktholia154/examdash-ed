@@ -978,7 +978,7 @@ export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTempl
           currency={activeFullReader.currency}
           userEmail={user?.email ?? null}
           entitlementProof={activeFullReader.purchase.entitlementProof}
-          getAuthToken={user ? () => user.getIdToken() : null}
+          getAuthToken={user ? (forceRefresh?: boolean) => user.getIdToken(forceRefresh) : null}
           initialProgress={getReadingProgress(activeFullReader.purchase.itemId, 'pdf')}
           isInCart={false}
           checkoutBusy={false}
@@ -996,7 +996,7 @@ export function PurchasedLibraryTemplate({ books, exams }: PurchasedLibraryTempl
           buyPrice={activeFullReader.buyPrice}
           currency={activeFullReader.currency}
           entitlementProof={activeFullReader.purchase.entitlementProof}
-          getAuthToken={user ? () => user.getIdToken() : null}
+          getAuthToken={user ? (forceRefresh?: boolean) => user.getIdToken(forceRefresh) : null}
           initialProgress={getReadingProgress(activeFullReader.purchase.itemId, 'markdown')}
           isInCart={false}
           checkoutBusy={false}

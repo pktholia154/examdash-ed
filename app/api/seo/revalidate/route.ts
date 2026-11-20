@@ -5,7 +5,7 @@ import { getCanonicalBaseUrl } from '@/lib/seo/structured-data';
 
 export const runtime = 'nodejs';
 
-const ALLOWED_TAGS = new Set(['catalog-books', 'catalog-exams', 'sitemap']);
+const ALLOWED_TAGS = new Set(['catalog-books', 'catalog-exams', 'catalog-reviews', 'sitemap']);
 
 /**
  * Event-driven Cache-Tag invalidation + IndexNow notification endpoint (Pillars 2 & 4).

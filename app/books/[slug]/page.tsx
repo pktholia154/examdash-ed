@@ -7,6 +7,7 @@ import {
   fetchPublishedExams,
   lookupBookBySlug,
 } from '@/lib/firebase/server-catalog';
+import { fetchProductReviewsAndSummary } from '@/lib/firebase/server-reviews';
 import { escapeJsonLd } from '@/lib/design-system/formatters';
 import { buildCleanMetaDescription } from '@/lib/seo/overview-markdown';
 import { selectRelatedCatalogItems } from '@/lib/seo/related-items';
@@ -99,12 +100,13 @@ export default async function BookDetailPage({ params }: PageProps) {
   }
 
   const book = lookup.item;
-  const [allBooks, allExams] = await Promise.all([
+  const [allBooks, allExams, reviewBundle] = await Promise.all([
     fetchPublishedBooks(),
     fetchPublishedExams(),
+    fetchProductReviewsAndSummary('books', book.id),
   ]);
   const relatedItems = selectRelatedCatalogItems(book, allBooks, allExams, 6);
-  const graph = buildBookDetailGraph(getCanonicalBaseUrl(), book);
+  const graph = buildBookDetailGraph(getCanonicalBaseUrl(), book, reviewBundle);
 
   return (
     <>
@@ -112,7 +114,12 @@ export default async function BookDetailPage({ params }: PageProps) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: escapeJsonLd(graph) }}
       />
-      <DetailPageServerShell item={book} relatedItems={relatedItems} />
+      <DetailPageServerShell
+        item={book}
+        relatedItems={relatedItems}
+        reviews={reviewBundle.reviews}
+        ratingSummary={reviewBundle.summary}
+      />
     </>
   );
 }

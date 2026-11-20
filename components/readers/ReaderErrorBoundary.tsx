@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { RotateCcw, X } from 'lucide-react';
+import { RefreshCw, RotateCcw, X } from 'lucide-react';
 
 interface ReaderErrorBoundaryProps {
   readonly title: string;
@@ -12,6 +12,22 @@ interface ReaderErrorBoundaryProps {
 interface ReaderErrorBoundaryState {
   readonly hasError: boolean;
   readonly message: string;
+  readonly isChunkError: boolean;
+}
+
+const CHUNK_RELOAD_GUARD_KEY = 'examdash_chunk_reload_ts';
+
+function isChunkLoadError(error: Error | null | undefined): boolean {
+  if (!error) return false;
+  const name = error.name || '';
+  const msg = error.message || '';
+  return (
+    name === 'ChunkLoadError' ||
+    /Loading chunk [\w-]+ failed/i.test(msg) ||
+    /Loading CSS chunk [\w-]+ failed/i.test(msg) ||
+    /Failed to fetch dynamically imported module/i.test(msg) ||
+    /Importing a module script failed/i.test(msg)
+  );
 }
 
 export class ReaderErrorBoundary extends React.Component<
@@ -20,22 +36,44 @@ export class ReaderErrorBoundary extends React.Component<
 > {
   constructor(props: ReaderErrorBoundaryProps) {
     super(props);
-    this.state = { hasError: false, message: '' };
+    this.state = { hasError: false, message: '', isChunkError: false };
   }
 
   static getDerivedStateFromError(error: Error): ReaderErrorBoundaryState {
+    const chunkErr = isChunkLoadError(error);
     return {
       hasError: true,
-      message: error?.message || 'An unexpected error occurred while rendering this document.',
+      isChunkError: chunkErr,
+      message: chunkErr
+        ? 'An updated version of ExamDash was deployed. Reloading will fetch the latest reader files.'
+        : error?.message || 'An unexpected error occurred while rendering this document.',
     };
   }
 
   componentDidCatch(error: Error): void {
     console.error('ReaderErrorBoundary caught:', error);
+
+    // For stale deployment chunk errors, trigger a single automatic reload (guarded against loops)
+    if (isChunkLoadError(error) && typeof window !== 'undefined') {
+      try {
+        const lastReloadRaw = window.sessionStorage.getItem(CHUNK_RELOAD_GUARD_KEY);
+        const lastReload = lastReloadRaw ? Number(lastReloadRaw) : 0;
+        if (!Number.isFinite(lastReload) || Date.now() - lastReload > 30_000) {
+          window.sessionStorage.setItem(CHUNK_RELOAD_GUARD_KEY, String(Date.now()));
+          window.location.reload();
+        }
+      } catch {
+        // Storage unavailable (private browsing); let user click Reload button
+      }
+    }
   }
 
   handleRetry = (): void => {
-    this.setState({ hasError: false, message: '' });
+    if (this.state.isChunkError && typeof window !== 'undefined') {
+      window.location.reload();
+      return;
+    }
+    this.setState({ hasError: false, message: '', isChunkError: false });
   };
 
   render() {
@@ -77,8 +115,17 @@ export class ReaderErrorBoundary extends React.Component<
                 onClick={this.handleRetry}
                 className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-[var(--brand-ink)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--brand-ink-hover)]"
               >
-                <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                <span>Retry</span>
+                {this.state.isChunkError ? (
+                  <>
+                    <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                    <span>Reload Page</span>
+                  </>
+                ) : (
+                  <>
+                    <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                    <span>Retry</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

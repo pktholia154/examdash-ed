@@ -2,7 +2,6 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
-import 'katex/dist/katex.min.css';
 import {
   BookOpen,
   Check,
@@ -42,10 +41,11 @@ export interface MarkdownReaderModalProps {
   readonly buyPrice: number;
   readonly currency: string;
   readonly entitlementProof: string | null;
-  readonly getAuthToken: (() => Promise<string>) | null;
+  readonly getAuthToken: ((forceRefresh?: boolean) => Promise<string>) | null;
   readonly initialProgress: ReadingProgressRecord | null;
   readonly isInCart: boolean;
   readonly checkoutBusy: boolean;
+  readonly checkoutError?: string | null;
   readonly onSaveProgress: (record: Omit<ReadingProgressRecord, 'id' | 'updatedAt'>) => void;
   readonly onAddToCart?: () => void;
   readonly onBuyNow?: () => void;
@@ -59,6 +59,13 @@ function makeOfflineMdKey(bookId: string, mode: ReaderMode): string {
   return `md_${bookId}_${mode}.md`;
 }
 
+function safeEscapeSelectorId(id: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(id);
+  }
+  return id.replace(/([^\w-])/g, '\\$1');
+}
+
 export function MarkdownReaderModal({
   bookId,
   bookTitle,
@@ -70,6 +77,7 @@ export function MarkdownReaderModal({
   initialProgress,
   isInCart,
   checkoutBusy,
+  checkoutError = null,
   onSaveProgress,
   onAddToCart,
   onBuyNow,
@@ -152,25 +160,41 @@ export function MarkdownReaderModal({
   useEffect(() => {
     let cancelled = false;
 
+    async function fetchMarkdownFromProxy(forceRefreshToken: boolean) {
+      const headers: Record<string, string> = {};
+      if (mode === 'full') {
+        if (getAuthToken) {
+          const token = await getAuthToken(forceRefreshToken);
+          headers.Authorization = `Bearer ${token}`;
+        }
+        if (entitlementProof) {
+          headers['X-Entitlement-Proof'] = entitlementProof;
+        }
+        if (forceRefreshToken) {
+          headers['Cache-Control'] = 'no-cache';
+        }
+      }
+      return fetch(`/api/books/${encodeURIComponent(bookId)}/markdown?mode=${mode}`, {
+        headers,
+        credentials: 'same-origin',
+      });
+    }
+
     async function fetchAndParseMarkdown() {
       try {
-        let markdownText = await webOfflineStorageAdapter.readText(makeOfflineMdKey(bookId, mode));
+        let markdownText: string | null = null;
+        try {
+          markdownText = await webOfflineStorageAdapter.readText(makeOfflineMdKey(bookId, mode));
+        } catch {
+          markdownText = null;
+        }
         let assetBaseUrl: string | undefined;
 
         if (!markdownText) {
-          const headers: Record<string, string> = {};
-          if (mode === 'full') {
-            if (getAuthToken) {
-              const token = await getAuthToken();
-              headers.Authorization = `Bearer ${token}`;
-            }
-            if (entitlementProof) {
-              headers['X-Entitlement-Proof'] = entitlementProof;
-            }
+          let res = await fetchMarkdownFromProxy(false);
+          if ((res.status === 401 || res.status === 403) && mode === 'full' && getAuthToken) {
+            res = await fetchMarkdownFromProxy(true);
           }
-          const res = await fetch(`/api/books/${encodeURIComponent(bookId)}/markdown?mode=${mode}`, {
-            headers,
-          });
           const payload = (await res.json().catch(() => ({}))) as {
             markdown?: string;
             assetBaseUrl?: string;
@@ -360,7 +384,9 @@ export function MarkdownReaderModal({
     if (rawHref.startsWith('#')) {
       e.preventDefault();
       const targetId = rawHref.slice(1);
-      const heading = articleRef.current?.querySelector<HTMLElement>(`#${CSS.escape(targetId)}`);
+      const heading = articleRef.current?.querySelector<HTMLElement>(
+        `#${safeEscapeSelectorId(targetId)}`
+      );
       if (heading) {
         heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
@@ -690,7 +716,7 @@ export function MarkdownReaderModal({
                         type="button"
                         onClick={() => {
                           const target = articleRef.current?.querySelector<HTMLElement>(
-                            `#${CSS.escape(heading.id)}`
+                            `#${safeEscapeSelectorId(heading.id)}`
                           );
                           if (target) {
                             target.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -829,6 +855,14 @@ export function MarkdownReaderModal({
                       </button>
                     )}
                   </div>
+                  {checkoutError && (
+                    <p
+                      role="alert"
+                      className="mx-auto mt-4 max-w-md rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800"
+                    >
+                      {checkoutError}
+                    </p>
+                  )}
                 </section>
               )}
             </>

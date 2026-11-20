@@ -4,17 +4,26 @@ import { ArrowLeft } from 'lucide-react';
 import { SiteChromeShell } from '@/components/organisms/SiteChromeShell';
 import { DetailActionsIsland } from '@/components/organisms/DetailActionsIsland';
 import { ExamMockActionLeaf } from '@/components/organisms/ExamMockActionLeaf';
+import { ProductReviewsSection } from '@/components/organisms/ProductReviewsSection';
 import { MonogramThumbnail } from '@/components/atoms/MonogramThumbnail';
 import { PriceDisplay } from '@/components/atoms/PriceDisplay';
+import { StarRatingDisplay } from '@/components/atoms/StarRatingDisplay';
 import { getContentTypeConfig } from '@/lib/design-system/content-types';
 import { renderOverviewMarkdownToHtml } from '@/lib/seo/overview-markdown';
 import { normalizeIsoTimestamp } from '@/lib/seo/sitemap-builder';
 import { filterConflictingPriceTags } from '@/lib/seo/structured-data';
+import {
+  computeProductRatingSummary,
+  type ProductRatingSummary,
+  type ProductReviewDTO,
+} from '@/core/reviews/schema';
 import type { PublicBookDTO, PublicExamPackDTO } from '@/lib/design-system/types';
 
 export interface DetailPageServerShellProps {
   readonly item: PublicBookDTO | PublicExamPackDTO;
   readonly relatedItems?: readonly (PublicBookDTO | PublicExamPackDTO)[];
+  readonly reviews?: readonly ProductReviewDTO[];
+  readonly ratingSummary?: ProductRatingSummary;
 }
 
 function formatReadableDate(iso: string | null): string | null {
@@ -60,10 +69,14 @@ function formatCategoryLabel(raw: string): string {
 export function DetailPageServerShell({
   item,
   relatedItems = [],
+  reviews = [],
+  ratingSummary,
 }: DetailPageServerShellProps) {
   const config = getContentTypeConfig(item.contentType);
   const isBook = item.contentType === 'books';
   const isExam = item.contentType === 'exams';
+  const resolvedRatingSummary =
+    ratingSummary ?? computeProductRatingSummary(item.contentType, item.id, reviews);
 
   const displayType = formatCategoryLabel(item.type);
   const seoDescription = item.seoDescription.trim();
@@ -172,6 +185,32 @@ export function DetailPageServerShell({
                   {item.publisher.trim() ? `Published by ${item.publisher.trim()}` : ''}
                 </p>
               )}
+
+              <div className="flex flex-wrap items-center gap-3 text-xs">
+                {resolvedRatingSummary.ratingCount > 0 ? (
+                  <a
+                    href="#reviews"
+                    className="inline-flex items-center gap-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:underline"
+                  >
+                    <StarRatingDisplay
+                      rating={resolvedRatingSummary.ratingValue}
+                      size="sm"
+                      showNumeric
+                    />
+                    <span>
+                      · {resolvedRatingSummary.reviewCount}{' '}
+                      {resolvedRatingSummary.reviewCount === 1 ? 'review' : 'reviews'}
+                    </span>
+                  </a>
+                ) : (
+                  <a
+                    href="#reviews"
+                    className="text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:underline"
+                  >
+                    No reviews yet · Be the first to review
+                  </a>
+                )}
+              </div>
 
               {seoDescription && (
                 <p
@@ -304,6 +343,16 @@ export function DetailPageServerShell({
             )}
           </div>
         </article>
+
+        {/* Genuine User Ratings & Reviews (Zero Demo/Fake Data) */}
+        <ProductReviewsSection
+          contentType={item.contentType}
+          itemId={item.id}
+          itemTitle={item.title}
+          urlSlug={item.urlSlug}
+          initialReviews={reviews}
+          initialSummary={resolvedRatingSummary}
+        />
 
         {/* Shallow Server-Side Internal Link Graph: Published Related Catalog Items + Hub Links */}
         <section

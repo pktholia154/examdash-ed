@@ -167,19 +167,28 @@ async function processNextRender(): Promise<void> {
         const standaloneCopy = new Uint8ClampedArray(clampedRgba.length);
         standaloneCopy.set(clampedRgba);
 
+        let transferredBitmap = false;
         if (typeof createImageBitmap === 'function' && typeof ImageData === 'function') {
-          const imageData = new ImageData(standaloneCopy, rendered.width, rendered.height);
-          const bitmap = await createImageBitmap(imageData);
-          const msg: PdfWorkerResponse = {
-            type: 'RENDERED_BITMAP',
-            requestId: task.requestId,
-            pageNumber: task.pageNumber,
-            width: rendered.width,
-            height: rendered.height,
-            bitmap,
-          };
-          self.postMessage(msg, [bitmap]);
-        } else {
+          try {
+            const imageData = new ImageData(standaloneCopy, rendered.width, rendered.height);
+            const bitmap = await createImageBitmap(imageData);
+            const msg: PdfWorkerResponse = {
+              type: 'RENDERED_BITMAP',
+              requestId: task.requestId,
+              pageNumber: task.pageNumber,
+              width: rendered.width,
+              height: rendered.height,
+              bitmap,
+            };
+            self.postMessage(msg, [bitmap]);
+            transferredBitmap = true;
+          } catch {
+            // Safari / WebKit worker fallback: transfer raw RGBA pixels directly
+            transferredBitmap = false;
+          }
+        }
+
+        if (!transferredBitmap) {
           const rgbaBuffer = standaloneCopy.buffer;
           const msg: PdfWorkerResponse = {
             type: 'RENDERED_RGBA',
@@ -222,6 +231,7 @@ self.onmessage = async (event: MessageEvent<PdfWorkerRequest>) => {
     try {
       const response = await fetch(msg.url, {
         headers: msg.headers,
+        credentials: 'same-origin',
         signal: openAbortController.signal,
       });
 

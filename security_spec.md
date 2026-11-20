@@ -7,8 +7,11 @@
 4. **Immutable Purchase Entitlements**: Purchase records at `/users/{userId}/purchases/{purchaseId}` require parent user document existence, verified email, `status == 'completed'`, valid `razorpayOrderId`, `razorpayPaymentId`, and server-signed `entitlementProof`. Once created (`status == 'completed'`), purchase records are terminal and cannot be modified or deleted by non-admin clients. Server-side full-content proxies independently verify `entitlementProof` with `RAZORPAY_KEY_SECRET` before streaming full books.
 5. **Reading Progress Integrity**: Reading progress records at `/users/{userId}/readingProgress/{progressId}` require parent user document existence, enforce `uid == userId == request.auth.uid`, valid `format` (`pdf`|`markdown`), `mode` (`sample`|`full`), bounded ratios (`0..1`), bounded zoom (`0.5..4`), and server timestamps.
 6. **Temporal Integrity & Path Hardening**: All document IDs are validated via `isValidId()` (`^[a-zA-Z0-9_\-]+$`, `<= 128` chars), all strings enforce explicit `.size()` bounds, and timestamps (`createdAt`, `updatedAt`, `addedAt`, `purchasedAt`) must equal `request.time`.
+7. **Genuine-Only Product Reviews & 1-Per-User Key**: Reviews at `/productReviews/{reviewId}` require `isVerifiedUser()`, deterministic key `reviewId == contentType + '_' + itemId + '_' + request.auth.uid`, integer `rating` in `1..5`, body length `10..2000`, title length `0..120`, authorName length `2..80` (zero PII such as email), and parent catalog document existence (`isPublished == true && isDeleted == false`).
+8. **Anti-Spoof Verified Purchase Badge**: A review can ONLY set `verifiedPurchase == true` if `/users/{uid}/purchases/{contentType}_{itemId}` actually exists in Firestore.
+9. **Atomic Helpful Votes**: `/productReviews/{reviewId}/helpfulVotes/{voterUid}` requires `voterUid == request.auth.uid`, forbids self-voting (`review.uid != request.auth.uid`), and enforces atomic synchronization with parent `helpfulCount` (`+1` on vote create with `existsAfter`, `-1` on vote delete with `!existsAfter`).
 
-## 2. The "Dirty Dozen" Adversarial Payloads
+## 2. The "Dirty Dozen" + Review Adversarial Payloads
 1. **Unauthenticated Write to `books`**: Anonymous user attempts `create` on `/books/B999` -> `PERMISSION_DENIED`.
 2. **Non-Admin Update to `ExamPackDocument`**: Standard signed-in user attempts to lower `buyPrice` to `0` on `/ExamPackDocument/E1` -> `PERMISSION_DENIED`.
 3. **Draft / Deleted Catalog Leak**: Unauthenticated user attempts `get` on an unpublished (`isPublished: false`) or deleted (`isDeleted: true`) book -> `PERMISSION_DENIED`.
@@ -21,3 +24,9 @@
 10. **Value Poisoning in Cart & Progress Updates**: User A updates cart `quantity: 99999` or progress `zoomScale: 999` -> `PERMISSION_DENIED`.
 11. **Terminal State Violation on Purchases**: User A attempts to `update` or `delete` a completed purchase record at `/users/userA/purchases/p1` -> `PERMISSION_DENIED`.
 12. **Unverified Email Admin Spoof**: Attacker signs in with admin email where `email_verified == false` and attempts catalog write -> `PERMISSION_DENIED`.
+13. **Duplicate Review Spam**: User A attempts to create `/productReviews/books_B1_randomSuffix` instead of deterministic `books_B1_<uid>` -> `PERMISSION_DENIED`.
+14. **Spoofed Verified Purchase Badge**: User A creates a review for `books/B1` with `verifiedPurchase: true` without owning `/users/userA/purchases/books_B1` -> `PERMISSION_DENIED`.
+15. **Orphan Review Against Non-Existent / Unpublished Product**: User A creates a review targeting `books/NON_EXISTENT` -> `PERMISSION_DENIED`.
+16. **Rating / Payload Poisoning**: User A submits `rating: 6`, `rating: 4.5`, `body: "ok"` (< 10 chars), or shadow field `email: "a@b.com"` -> `PERMISSION_DENIED`.
+17. **Self Helpful-Vote / Counter Inflation**: User A attempts to increment `helpfulCount` on their own review or increment `helpfulCount` by `+10` without creating `/helpfulVotes/{uid}` atomically -> `PERMISSION_DENIED`.
+18. **Cross-User Review Tampering**: User B attempts to edit or delete User A's review -> `PERMISSION_DENIED`.

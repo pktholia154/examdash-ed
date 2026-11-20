@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyEntitlementProof } from '@/core/payments/razorpay';
+import { getRazorpayKeySecret, verifyEntitlementProof } from '@/core/payments/razorpay';
 import {
   extractBearerToken,
   fetchServerBookFilePaths,
@@ -34,7 +34,7 @@ export async function GET(
       }
       targetUrl = resolveFirebaseStorageUrl(bookPaths.sampleMarkdownUrl);
     } else {
-      const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim() ?? '';
+      const keySecret = getRazorpayKeySecret();
       const token = extractBearerToken(req);
       const entitlementProof = req.headers.get('x-entitlement-proof')?.trim() ?? '';
 
@@ -66,7 +66,8 @@ export async function GET(
       }
 
       targetUrl = resolveFirebaseStorageUrl(bookPaths.fullMarkdownStoragePath);
-      if (!verifiedUser.isReviewerSession) {
+      const hasEmbeddedDownloadToken = /[?&]token=[^&]+/i.test(targetUrl);
+      if (!verifiedUser.isReviewerSession && !hasEmbeddedDownloadToken) {
         upstreamHeaders.Authorization = `Firebase ${token}`;
       }
     }
@@ -75,11 +76,22 @@ export async function GET(
     const timeout = setTimeout(() => controller.abort(), 20_000);
 
     try {
-      const upstream = await fetch(targetUrl, {
+      let upstream = await fetch(targetUrl, {
         headers: upstreamHeaders,
         signal: controller.signal,
-        cache: mode === 'sample' ? 'force-cache' : 'no-store',
+        cache: 'no-store',
       });
+
+      if ((upstream.status === 401 || upstream.status === 403) && upstreamHeaders.Authorization) {
+        const retryHeaders = { ...upstreamHeaders };
+        delete retryHeaders.Authorization;
+        upstream = await fetch(targetUrl, {
+          headers: retryHeaders,
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+      }
+
       clearTimeout(timeout);
 
       if (!upstream.ok) {
@@ -101,7 +113,9 @@ export async function GET(
         {
           headers: {
             'Cache-Control':
-              mode === 'sample' ? 'public, max-age=300' : 'private, no-store, max-age=0',
+              mode === 'sample'
+                ? 'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400'
+                : 'private, no-store, max-age=0',
           },
         }
       );

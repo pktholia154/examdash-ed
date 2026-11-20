@@ -55,3 +55,22 @@ test('Dirty Dozen #12: Admin checks mandate verified email', () => {
   assert.match(activeRules, /function isVerifiedUser\(\)[\s\S]*request\.auth\.token\.email_verified == true/);
   assert.match(activeRules, /function isAdmin\(\)[\s\S]*isVerifiedUser\(\)/);
 });
+
+test('Review Security #13-#16: Deterministic 1-per-user key, verifiedPurchase anti-spoof, parent check, and strict bounds', () => {
+  assert.match(activeRules, /function isValidProductReview\(data, reviewId\)/);
+  assert.match(activeRules, /data\.id == \(data\.contentType \+ '_' \+ data\.itemId \+ '_' \+ data\.uid\)/);
+  assert.match(activeRules, /data\.rating is int && data\.rating >= 1 && data\.rating <= 5/);
+  assert.match(activeRules, /data\.body is string && data\.body\.size\(\) >= 10 && data\.body\.size\(\) <= 2000/);
+  assert.match(activeRules, /data\.title is string && data\.title\.size\(\) <= 120/);
+  assert.match(activeRules, /data\.authorName is string && data\.authorName\.size\(\) >= 2 && data\.authorName\.size\(\) <= 80/);
+  assert.match(activeRules, /isPublishedCatalogProduct\(incoming\(\)\.contentType, incoming\(\)\.itemId\)/);
+  assert.match(activeRules, /incoming\(\)\.verifiedPurchase == false \|\| hasVerifiedProductPurchase\(/);
+});
+
+test('Review Security #17-#18: Atomic helpful votes block self-voting and require existsAfter/getAfter pairing', () => {
+  assert.match(activeRules, /match \/helpfulVotes\/\{voterUid\}/);
+  assert.match(activeRules, /request\.auth\.uid != existing\(\)\.uid/);
+  assert.match(activeRules, /existsAfter\(\/databases\/\$\(database\)\/documents\/productReviews\/\$\(reviewId\)\/helpfulVotes\/\$\(request\.auth\.uid\)\)/);
+  assert.match(activeRules, /getAfter\(\/databases\/\$\(database\)\/documents\/productReviews\/\$\(reviewId\)\)\.data\.helpfulCount/);
+  assert.match(activeRules, /allow delete: if isVerifiedUser\(\) && isValidId\(reviewId\) && \(isOwner\(existing\(\)\.uid\) \|\| isAdmin\(\)\);/);
+});

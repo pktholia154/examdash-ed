@@ -285,11 +285,92 @@ export function buildHubCollectionGraph(
   };
 }
 
+export interface StructuredReviewBundle {
+  readonly summary: {
+    readonly ratingValue: number;
+    readonly ratingCount: number;
+    readonly reviewCount: number;
+  };
+  readonly reviews: readonly {
+    readonly id: string;
+    readonly rating: number;
+    readonly title: string;
+    readonly body: string;
+    readonly authorName: string;
+    readonly createdAt: string;
+  }[];
+}
+
+function attachGenuineReviewMarkup(
+  targetNode: Record<string, unknown>,
+  canonicalUrl: string,
+  reviewData?: StructuredReviewBundle
+): void {
+  if (!reviewData) return;
+
+  const { summary, reviews } = reviewData;
+  const publishedReviews = reviews.filter(
+    (r) =>
+      Number.isInteger(r.rating) &&
+      r.rating >= 1 &&
+      r.rating <= 5 &&
+      r.body.trim().length >= 10 &&
+      r.authorName.trim().length >= 2
+  );
+
+  if (
+    summary.ratingCount > 0 &&
+    summary.ratingValue >= 1 &&
+    summary.ratingValue <= 5 &&
+    publishedReviews.length > 0
+  ) {
+    targetNode.aggregateRating = {
+      '@type': 'AggregateRating',
+      ratingValue: Number(summary.ratingValue.toFixed(1)),
+      reviewCount: summary.reviewCount,
+      ratingCount: summary.ratingCount,
+      bestRating: 5,
+      worstRating: 1,
+    };
+
+    targetNode.review = publishedReviews.slice(0, 10).map((r) => {
+      const datePublished = normalizeIsoTimestamp(r.createdAt);
+      const reviewNode: Record<string, unknown> = {
+        '@type': 'Review',
+        '@id': `${canonicalUrl}#review-${r.id}`,
+        author: {
+          '@type': 'Person',
+          name: r.authorName.trim(),
+        },
+        reviewBody: r.body.trim(),
+        reviewRating: {
+          '@type': 'Rating',
+          ratingValue: r.rating,
+          bestRating: 5,
+          worstRating: 1,
+        },
+      };
+      if (r.title.trim()) {
+        reviewNode.name = r.title.trim();
+      }
+      if (datePublished) {
+        reviewNode.datePublished = datePublished;
+      }
+      return reviewNode;
+    });
+  }
+}
+
 /**
  * 1:1 Verified JSON-LD `@graph` for Book Detail Pages (`["Product", "Book"]`).
- * Strictly derived from visible database fields — zero fabricated reviews, ratings, or FAQs.
+ * Strictly derived from visible database fields — emits `aggregateRating` and `review`
+ * ONLY when genuine published user reviews exist (never fabricates demo/placeholder ratings).
  */
-export function buildBookDetailGraph(baseUrl: string, book: PublicBookDTO) {
+export function buildBookDetailGraph(
+  baseUrl: string,
+  book: PublicBookDTO,
+  reviewData?: StructuredReviewBundle
+) {
   const canonicalUrl = `${baseUrl}/books/${book.urlSlug}`;
   const thumbnailUrl = getCatalogThumbnailUrl(baseUrl, 'books', book.urlSlug);
   const description = buildCleanMetaDescription(
@@ -340,6 +421,8 @@ export function buildBookDetailGraph(baseUrl: string, book: PublicBookDTO) {
     bookNode.dateModified = dateModified;
   }
 
+  attachGenuineReviewMarkup(bookNode, canonicalUrl, reviewData);
+
   const webPageNode: Record<string, unknown> = {
     '@type': 'ItemPage',
     '@id': `${canonicalUrl}#webpage`,
@@ -380,9 +463,14 @@ export function buildBookDetailGraph(baseUrl: string, book: PublicBookDTO) {
 
 /**
  * 1:1 Verified JSON-LD `@graph` for Exam Pack Detail Pages (`["Product", "Course"]`).
- * Strictly derived from visible database fields — zero fabricated reviews, ratings, or FAQs.
+ * Strictly derived from visible database fields — emits `aggregateRating` and `review`
+ * ONLY when genuine published user reviews exist (never fabricates demo/placeholder ratings).
  */
-export function buildExamDetailGraph(baseUrl: string, exam: PublicExamPackDTO) {
+export function buildExamDetailGraph(
+  baseUrl: string,
+  exam: PublicExamPackDTO,
+  reviewData?: StructuredReviewBundle
+) {
   const canonicalUrl = `${baseUrl}/exams/${exam.urlSlug}`;
   const thumbnailUrl = getCatalogThumbnailUrl(baseUrl, 'exams', exam.urlSlug);
   const description = buildCleanMetaDescription(
@@ -438,6 +526,8 @@ export function buildExamDetailGraph(baseUrl: string, exam: PublicExamPackDTO) {
   if (dateModified) {
     courseNode.dateModified = dateModified;
   }
+
+  attachGenuineReviewMarkup(courseNode, canonicalUrl, reviewData);
 
   const webPageNode: Record<string, unknown> = {
     '@type': 'ItemPage',

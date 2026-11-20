@@ -352,10 +352,11 @@ export function DetailActionsIsland({
           currency={currency}
           userEmail={user?.email ?? null}
           entitlementProof={purchaseRecord?.entitlementProof ?? null}
-          getAuthToken={user ? () => user.getIdToken() : null}
+          getAuthToken={user ? (forceRefresh?: boolean) => user.getIdToken(forceRefresh) : null}
           initialProgress={getReadingProgress(id, 'pdf')}
           isInCart={added}
           checkoutBusy={checkoutBusy}
+          checkoutError={checkoutError}
           onSaveProgress={(rec) => void saveReadingProgress(rec)}
           onAddToCart={() => void addToCart(cartItemPayload)}
           onBuyNow={() => void handleBuyNow()}
@@ -372,10 +373,11 @@ export function DetailActionsIsland({
           buyPrice={buyPrice}
           currency={currency}
           entitlementProof={purchaseRecord?.entitlementProof ?? null}
-          getAuthToken={user ? () => user.getIdToken() : null}
+          getAuthToken={user ? (forceRefresh?: boolean) => user.getIdToken(forceRefresh) : null}
           initialProgress={getReadingProgress(id, 'markdown')}
           isInCart={added}
           checkoutBusy={checkoutBusy}
+          checkoutError={checkoutError}
           onSaveProgress={(rec) => void saveReadingProgress(rec)}
           onAddToCart={() => void addToCart(cartItemPayload)}
           onBuyNow={() => void handleBuyNow()}

@@ -142,18 +142,94 @@ export interface EntitlementPayload {
 
 const ORDER_BINDING_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
+const KEY_ID_ENV_NAMES = [
+  'RAZORPAY_KEY_ID',
+  'NEXT_PUBLIC_RAZORPAY_KEY_ID',
+  'RAZORPAY_KEY',
+  'NEXT_PUBLIC_RAZORPAY_KEY',
+] as const;
+
+const KEY_SECRET_ENV_NAMES = [
+  'RAZORPAY_KEY_SECRET',
+  'RAZORPAY_SECRET',
+] as const;
+
+const WEBHOOK_SECRET_ENV_NAMES = [
+  'RAZORPAY_WEBHOOK_SECRET',
+  'RAZORPAY_WEBHOOK_SIGNING_SECRET',
+] as const;
+
+function stripWrappingQuotes(raw: string): string {
+  const trimmed = raw.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 /**
- * Resolves server-side Razorpay configuration from environment variables.
- * Supports both `RAZORPAY_KEY_ID` (standard Razorpay SDK naming) and `NEXT_PUBLIC_RAZORPAY_KEY_ID`.
+ * Reads runtime environment variables via bracket access on an aliased `process.env`
+ * reference so Next.js / webpack DefinePlugin NEVER statically inlines
+ * `NEXT_PUBLIC_RAZORPAY_KEY_ID` as `""` during standalone Docker builds.
+ */
+function readRuntimeEnv(names: readonly string[]): string {
+  const runtimeEnv: Record<string, string | undefined> = process.env;
+  for (const name of names) {
+    const raw = runtimeEnv[name];
+    if (typeof raw !== 'string') continue;
+    const cleaned = stripWrappingQuotes(raw);
+    if (cleaned.length > 0 && !/^MY_RAZORPAY_/i.test(cleaned)) {
+      return cleaned;
+    }
+  }
+  return '';
+}
+
+export function getRazorpayKeySecret(): string {
+  return readRuntimeEnv(KEY_SECRET_ENV_NAMES);
+}
+
+export function getRazorpayWebhookSecret(): string | null {
+  const secret = readRuntimeEnv(WEBHOOK_SECRET_ENV_NAMES);
+  return secret || null;
+}
+
+export interface RazorpayConfigDiagnostics {
+  readonly configured: boolean;
+  readonly hasKeyId: boolean;
+  readonly hasKeySecret: boolean;
+  readonly mode: RazorpayServerConfig['mode'];
+}
+
+export function getRazorpayConfigDiagnostics(): RazorpayConfigDiagnostics {
+  const keyId = readRuntimeEnv(KEY_ID_ENV_NAMES);
+  const keySecret = getRazorpayKeySecret();
+  const mode: RazorpayServerConfig['mode'] = keyId.startsWith('rzp_test_')
+    ? 'test'
+    : keyId.startsWith('rzp_live_')
+      ? 'live'
+      : 'unknown';
+
+  return {
+    configured: Boolean(keyId && keySecret),
+    hasKeyId: Boolean(keyId),
+    hasKeySecret: Boolean(keySecret),
+    mode,
+  };
+}
+
+/**
+ * Resolves server-side Razorpay configuration from runtime environment variables.
+ * Supports `RAZORPAY_KEY_ID`, `NEXT_PUBLIC_RAZORPAY_KEY_ID`, and `RAZORPAY_KEY_SECRET`.
  */
 export function getRazorpayServerConfig(): RazorpayServerConfig | null {
-  const keyId = (
-    process.env.RAZORPAY_KEY_ID?.trim() ||
-    process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID?.trim() ||
-    ''
-  );
-  const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim() || '';
-  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim() || null;
+  const keyId = readRuntimeEnv(KEY_ID_ENV_NAMES);
+  const keySecret = getRazorpayKeySecret();
+  const webhookSecret = getRazorpayWebhookSecret();
 
   if (!keyId || !keySecret) {
     return null;

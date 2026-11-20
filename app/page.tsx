@@ -2,6 +2,7 @@ import React from 'react';
 import type { Metadata } from 'next';
 import { HomeDashboardTemplate } from '@/components/templates/HomeDashboardTemplate';
 import { fetchHomeCatalog } from '@/lib/firebase/server-catalog';
+import { fetchCatalogRatingSummaries } from '@/lib/firebase/server-reviews';
 import { escapeJsonLd } from '@/lib/design-system/formatters';
 import { buildHomeCollectionGraph, getCanonicalBaseUrl } from '@/lib/seo/structured-data';
 
@@ -21,7 +22,10 @@ export const metadata: Metadata = {
 };
 
 export default async function HomePage() {
-  const catalog = await fetchHomeCatalog();
+  const [catalog, ratingSummaries] = await Promise.all([
+    fetchHomeCatalog(),
+    fetchCatalogRatingSummaries(),
+  ]);
   const baseUrl = getCanonicalBaseUrl();
   const homeGraph = buildHomeCollectionGraph(baseUrl, catalog.books, catalog.exams);
 
@@ -38,6 +42,7 @@ export default async function HomePage() {
       <HomeDashboardTemplate
         books={compactBooks}
         exams={compactExams}
+        ratingSummaries={ratingSummaries}
         catalogError={catalog.error}
       />
     </>

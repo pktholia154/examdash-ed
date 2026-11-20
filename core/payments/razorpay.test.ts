@@ -301,3 +301,47 @@ test('sumOrderSubunits aggregates line totals accurately', () => {
   ]);
   assert.equal(paise, 50000);
 });
+
+test('getRazorpayServerConfig reads runtime env vars including NEXT_PUBLIC_RAZORPAY_KEY_ID and strips quotes', async () => {
+  const { getRazorpayConfigDiagnostics, getRazorpayServerConfig } = await import('./razorpay');
+  const keys = [
+    'RAZORPAY_KEY_ID',
+    'NEXT_PUBLIC_RAZORPAY_KEY_ID',
+    'RAZORPAY_KEY',
+    'NEXT_PUBLIC_RAZORPAY_KEY',
+    'RAZORPAY_KEY_SECRET',
+    'RAZORPAY_SECRET',
+    'RAZORPAY_WEBHOOK_SECRET',
+  ] as const;
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+
+  try {
+    for (const k of keys) delete process.env[k];
+    assert.equal(getRazorpayServerConfig(), null);
+    assert.deepEqual(getRazorpayConfigDiagnostics(), {
+      configured: false,
+      hasKeyId: false,
+      hasKeySecret: false,
+      mode: 'unknown',
+    });
+
+    // Supports NEXT_PUBLIC_RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET with accidental quotes
+    process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID = '"rzp_live_ABC123"';
+    process.env.RAZORPAY_KEY_SECRET = "'secret_xyz_999'";
+    const liveCfg = getRazorpayServerConfig();
+    assert.ok(liveCfg);
+    assert.equal(liveCfg.keyId, 'rzp_live_ABC123');
+    assert.equal(liveCfg.keySecret, 'secret_xyz_999');
+    assert.equal(liveCfg.mode, 'live');
+
+    // Rejects template placeholders from .env.example
+    process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID = 'MY_RAZORPAY_KEY_ID';
+    process.env.RAZORPAY_KEY_SECRET = 'MY_RAZORPAY_KEY_SECRET';
+    assert.equal(getRazorpayServerConfig(), null);
+  } finally {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+});

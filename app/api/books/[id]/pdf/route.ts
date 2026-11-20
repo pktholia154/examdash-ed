@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyEntitlementProof } from '@/core/payments/razorpay';
+import { getRazorpayKeySecret, verifyEntitlementProof } from '@/core/payments/razorpay';
 import {
   extractBearerToken,
   fetchServerBookFilePaths,
@@ -37,7 +37,7 @@ export async function GET(
       targetUrl = resolveFirebaseStorageUrl(bookPaths.samplePdfUrl);
     } else {
       // True server-side access enforcement for Full Paid PDF
-      const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim() ?? '';
+      const keySecret = getRazorpayKeySecret();
       const token = extractBearerToken(req);
       const entitlementProof = req.headers.get('x-entitlement-proof')?.trim() ?? '';
 
@@ -66,7 +66,8 @@ export async function GET(
       }
 
       targetUrl = resolveFirebaseStorageUrl(bookPaths.fullPdfStoragePath);
-      if (!verifiedUser.isReviewerSession) {
+      const hasEmbeddedDownloadToken = /[?&]token=[^&]+/i.test(targetUrl);
+      if (!verifiedUser.isReviewerSession && !hasEmbeddedDownloadToken) {
         upstreamHeaders.Authorization = `Firebase ${token}`;
       }
     }
@@ -75,11 +76,25 @@ export async function GET(
     const timeout = setTimeout(() => controller.abort(), 30_000);
 
     try {
-      const upstream = await fetch(targetUrl, {
+      // Always use `cache: 'no-store'` on upstream binary fetch to avoid Next.js 2MB Data Cache
+      // errors on large PDF files; HTTP Cache-Control headers handle browser & CDN edge caching.
+      let upstream = await fetch(targetUrl, {
         headers: upstreamHeaders,
         signal: controller.signal,
-        cache: mode === 'sample' ? 'force-cache' : 'no-store',
+        cache: 'no-store',
       });
+
+      // Fallback retry without Firebase Authorization header if upstream already uses public/signed URL
+      if ((upstream.status === 401 || upstream.status === 403) && upstreamHeaders.Authorization) {
+        const retryHeaders = { ...upstreamHeaders };
+        delete retryHeaders.Authorization;
+        upstream = await fetch(targetUrl, {
+          headers: retryHeaders,
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+      }
+
       clearTimeout(timeout);
 
       if (!upstream.ok && upstream.status !== 206) {
@@ -98,7 +113,9 @@ export async function GET(
       if (contentRange) resHeaders.set('Content-Range', contentRange);
       resHeaders.set(
         'Cache-Control',
-        mode === 'sample' ? 'public, max-age=300' : 'private, no-store, max-age=0'
+        mode === 'sample'
+          ? 'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400'
+          : 'private, no-store, max-age=0'
       );
 
       return new NextResponse(upstream.body, {

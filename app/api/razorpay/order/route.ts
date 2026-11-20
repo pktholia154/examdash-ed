@@ -3,6 +3,7 @@ import {
   assertSingleOrderCurrency,
   CreateOrderRequestSchema,
   encodeOrderItemsManifest,
+  getRazorpayConfigDiagnostics,
   getRazorpayServerConfig,
   normalizeCheckoutItems,
   signOrderBindingToken,
@@ -23,8 +24,21 @@ export async function POST(req: NextRequest) {
   try {
     const config = getRazorpayServerConfig();
     if (!config) {
+      const diag = getRazorpayConfigDiagnostics();
+      const missing: string[] = [];
+      if (!diag.hasKeyId) missing.push('RAZORPAY_KEY_ID (or NEXT_PUBLIC_RAZORPAY_KEY_ID)');
+      if (!diag.hasKeySecret) missing.push('RAZORPAY_KEY_SECRET');
+      console.error(
+        JSON.stringify({
+          scope: 'razorpay.order.unconfigured',
+          hasKeyId: diag.hasKeyId,
+          hasKeySecret: diag.hasKeySecret,
+        })
+      );
       return NextResponse.json(
-        { error: 'Razorpay payment gateway is not configured on the server.' },
+        {
+          error: `Razorpay payment gateway is not configured on the server (missing ${missing.join(' and ')} in runtime environment).`,
+        },
         { status: 503 }
       );
     }

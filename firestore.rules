@@ -198,6 +198,64 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidProductReview(data, reviewId) {
+      return data.keys().hasAll([
+          'id', 'uid', 'contentType', 'itemId', 'productKey', 'rating', 'title',
+          'body', 'authorName', 'verifiedPurchase', 'helpfulCount', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'uid', 'contentType', 'itemId', 'productKey', 'rating', 'title',
+          'body', 'authorName', 'verifiedPurchase', 'helpfulCount', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.uid) &&
+        isValidId(data.itemId) &&
+        data.id == reviewId &&
+        data.contentType in ['books', 'exams', 'quizbooks'] &&
+        data.productKey is string &&
+        data.productKey.size() >= 3 && data.productKey.size() <= 160 &&
+        data.productKey == (data.contentType + ':' + data.itemId) &&
+        data.id == (data.contentType + '_' + data.itemId + '_' + data.uid) &&
+        data.rating is int && data.rating >= 1 && data.rating <= 5 &&
+        data.title is string && data.title.size() <= 120 &&
+        data.body is string && data.body.size() >= 10 && data.body.size() <= 2000 &&
+        data.authorName is string && data.authorName.size() >= 2 && data.authorName.size() <= 80 &&
+        data.verifiedPurchase is bool &&
+        data.helpfulCount is int && data.helpfulCount >= 0 && data.helpfulCount <= 1000000 &&
+        data.status == 'published' &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isPublishedCatalogProduct(contentType, itemId) {
+      return (
+        contentType == 'books' &&
+        exists(/databases/$(database)/documents/books/$(itemId)) &&
+        get(/databases/$(database)/documents/books/$(itemId)).data.isPublished == true &&
+        get(/databases/$(database)/documents/books/$(itemId)).data.isDeleted == false
+      ) || (
+        contentType == 'exams' &&
+        exists(/databases/$(database)/documents/ExamPackDocument/$(itemId)) &&
+        get(/databases/$(database)/documents/ExamPackDocument/$(itemId)).data.isPublished == true &&
+        get(/databases/$(database)/documents/ExamPackDocument/$(itemId)).data.isDeleted == false
+      );
+    }
+
+    function hasVerifiedProductPurchase(uid, contentType, itemId) {
+      return exists(/databases/$(database)/documents/users/$(uid)/purchases/$(contentType + '_' + itemId));
+    }
+
+    function isValidReviewHelpfulVote(data, reviewId, voterUid) {
+      return data.keys().hasAll(['uid', 'reviewId', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'reviewId', 'createdAt']) &&
+        isValidId(data.uid) &&
+        isValidId(data.reviewId) &&
+        data.uid == voterUid &&
+        data.uid == request.auth.uid &&
+        data.reviewId == reviewId &&
+        data.createdAt is timestamp;
+    }
+
     // --- Admin Registry (read-only for self check) ---
     match /admins/{adminId} {
       allow get: if isValidId(adminId) && isOwner(adminId);
@@ -220,6 +278,82 @@ service cloud.firestore {
       allow create: if isVerifiedUser() && isValidId(examId) && isValidExamPack(incoming()) && isAdmin() && incoming().id == examId;
       allow update: if isVerifiedUser() && isValidId(examId) && isValidExamPack(incoming()) && isAdmin() && incoming().id == existing().id;
       allow delete: if isVerifiedUser() && isValidId(examId) && isAdmin();
+    }
+
+    // --- Genuine User Ratings & Reviews (Public Read, Verified-User 1-Per-Product Write) ---
+    match /productReviews/{reviewId} {
+      allow get: if isValidId(reviewId) && (existing().status == 'published' || isOwner(existing().uid) || isAdmin());
+      allow list: if existing().status == 'published' || isAdmin();
+      allow create: if isVerifiedUser() &&
+        isValidId(reviewId) &&
+        isValidProductReview(incoming(), reviewId) &&
+        incoming().uid == request.auth.uid &&
+        incoming().helpfulCount == 0 &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isPublishedCatalogProduct(incoming().contentType, incoming().itemId) &&
+        (incoming().verifiedPurchase == false || hasVerifiedProductPurchase(request.auth.uid, incoming().contentType, incoming().itemId));
+      allow update: if isVerifiedUser() &&
+        isValidId(reviewId) &&
+        isValidProductReview(incoming(), reviewId) && (
+          isAdmin() || (
+            // Action: Owner edits own genuine review
+            isOwner(existing().uid) &&
+            incoming().id == existing().id &&
+            incoming().uid == existing().uid &&
+            incoming().contentType == existing().contentType &&
+            incoming().itemId == existing().itemId &&
+            incoming().productKey == existing().productKey &&
+            incoming().helpfulCount == existing().helpfulCount &&
+            incoming().status == existing().status &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['rating', 'title', 'body', 'authorName', 'verifiedPurchase', 'updatedAt']) &&
+            (incoming().verifiedPurchase == false || hasVerifiedProductPurchase(request.auth.uid, existing().contentType, existing().itemId))
+          ) || (
+            // Action: Atomic helpful vote (+1) paired with helpfulVotes/{uid} creation
+            request.auth.uid != existing().uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['helpfulCount']) &&
+            incoming().helpfulCount == existing().helpfulCount + 1 &&
+            !exists(/databases/$(database)/documents/productReviews/$(reviewId)/helpfulVotes/$(request.auth.uid)) &&
+            existsAfter(/databases/$(database)/documents/productReviews/$(reviewId)/helpfulVotes/$(request.auth.uid))
+          ) || (
+            // Action: Atomic helpful vote (-1) paired with helpfulVotes/{uid} deletion
+            request.auth.uid != existing().uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['helpfulCount']) &&
+            incoming().helpfulCount == existing().helpfulCount - 1 &&
+            exists(/databases/$(database)/documents/productReviews/$(reviewId)/helpfulVotes/$(request.auth.uid)) &&
+            !existsAfter(/databases/$(database)/documents/productReviews/$(reviewId)/helpfulVotes/$(request.auth.uid))
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(reviewId) && (isOwner(existing().uid) || isAdmin());
+
+      // --- Atomic Per-User Helpful Votes Subcollection ---
+      match /helpfulVotes/{voterUid} {
+        allow get: if isValidId(reviewId) && isValidId(voterUid) && (isOwner(voterUid) || isAdmin());
+        allow list: if false;
+        allow create: if isVerifiedUser() &&
+          isValidId(reviewId) &&
+          isValidId(voterUid) &&
+          isValidReviewHelpfulVote(incoming(), reviewId, voterUid) &&
+          isOwner(voterUid) &&
+          incoming().createdAt == request.time &&
+          exists(/databases/$(database)/documents/productReviews/$(reviewId)) &&
+          get(/databases/$(database)/documents/productReviews/$(reviewId)).data.uid != voterUid &&
+          getAfter(/databases/$(database)/documents/productReviews/$(reviewId)).data.helpfulCount ==
+            get(/databases/$(database)/documents/productReviews/$(reviewId)).data.helpfulCount + 1;
+        allow update: if false;
+        allow delete: if isVerifiedUser() &&
+          isValidId(reviewId) &&
+          isValidId(voterUid) && (
+            isAdmin() || (
+              isOwner(voterUid) &&
+              exists(/databases/$(database)/documents/productReviews/$(reviewId)) &&
+              getAfter(/databases/$(database)/documents/productReviews/$(reviewId)).data.helpfulCount ==
+                get(/databases/$(database)/documents/productReviews/$(reviewId)).data.helpfulCount - 1
+            )
+          );
+      }
     }
 
     // --- Private User Profiles & Analytics ---
