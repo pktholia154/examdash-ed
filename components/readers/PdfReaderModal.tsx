@@ -1,6 +1,13 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -96,12 +103,60 @@ export function PdfReaderModal({
   const openRetriedAuthRef = useRef(false);
   const usedMainThreadFallbackRef = useRef(false);
   const docOpenedRef = useRef(false);
-  const lastTapTimeRef = useRef(0);
-  const pinchStartDistRef = useRef<number | null>(null);
-  const pinchStartScaleRef = useRef(1);
+  const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const touchGestureRef = useRef<{
+    active: boolean;
+    startX: number;
+    startY: number;
+    startTime: number;
+    moved: boolean;
+    wasMultiTouch: boolean;
+  }>({
+    active: false,
+    startX: 0,
+    startY: 0,
+    startTime: 0,
+    moved: false,
+    wasMultiTouch: false,
+  });
+  const pinchStateRef = useRef<{
+    active: boolean;
+    engaged: boolean;
+    startDist: number;
+    startScale: number;
+    pendingScale: number;
+    cooldownUntil: number;
+  }>({
+    active: false,
+    engaged: false,
+    startDist: 0,
+    startScale: 1,
+    pendingScale: 1,
+    cooldownUntil: 0,
+  });
+  const mousePanRef = useRef<{
+    active: boolean;
+    startX: number;
+    startY: number;
+    startScrollLeft: number;
+    startScrollTop: number;
+  }>({
+    active: false,
+    startX: 0,
+    startY: 0,
+    startScrollLeft: 0,
+    startScrollTop: 0,
+  });
+  const pendingFocalScrollRef = useRef<{
+    xRatio: number;
+    yRatio: number;
+    resetX: boolean;
+  } | null>(null);
   const zoomSettleTimerRef = useRef<number | null>(null);
   const progressTimerRef = useRef<number | null>(null);
   const rafZoomRef = useRef<number | null>(null);
+  const rafScrollRef = useRef<number | null>(null);
+  const lastMeasuredWidthRef = useRef<number>(0);
   const lastSavedStateRef = useRef<{
     pageIndex: number;
     totalPages: number;
@@ -118,11 +173,12 @@ export function PdfReaderModal({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pageMetrics, setPageMetrics] = useState<PageMetric[]>([]);
   const [currentPage, setCurrentPage] = useState(Math.max(1, (initialProgress?.pageIndex ?? 0) + 1));
+  const currentPageRef = useRef(currentPage);
   const [containerWidth, setContainerWidth] = useState(760);
   const [isMobile, setIsMobile] = useState(false);
   const [zoomScale, setZoomScale] = useState(() => clampPdfZoom(initialProgress?.zoomScale ?? 1));
+  const zoomScaleRef = useRef(zoomScale);
   const [liveCssScale, setLiveCssScale] = useState(1);
-  const [hudVisible, setHudVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [theme, setTheme] = useState<ReadingTheme>(() => {
     const saved = webPreferencesAdapter.get(PREF_PDF_THEME_KEY);
@@ -132,6 +188,16 @@ export function PdfReaderModal({
   const [offlineBusy, setOfflineBusy] = useState(false);
   const [jumpInput, setJumpInput] = useState('');
   const [renderedCount, setRenderedCount] = useState(0);
+
+  const isZoomed = zoomScale > 1.01;
+
+  useEffect(() => {
+    currentPageRef.current = currentPage;
+  }, [currentPage]);
+
+  useEffect(() => {
+    zoomScaleRef.current = zoomScale;
+  }, [zoomScale]);
 
   const totalPages = pageMetrics.length;
 
@@ -191,24 +257,27 @@ export function PdfReaderModal({
     [flushProgressNow]
   );
 
-  // Measure reader viewport width via ResizeObserver (debounced, CLS-safe)
+  // Measure reader viewport width via ResizeObserver (ignores mobile URL-bar height changes)
   useEffect(() => {
     const scroller = scrollContainerRef.current;
     if (!scroller) return;
 
     const updateDims = () => {
       const w = scroller.clientWidth;
+      if (w <= 0 || w === lastMeasuredWidthRef.current) return;
+      lastMeasuredWidthRef.current = w;
       const mobile = window.innerWidth < 768;
       setIsMobile(mobile);
-      const horizontalPad = mobile ? 20 : 64;
+      const horizontalPad = mobile ? 24 : 64;
       setContainerWidth(Math.max(240, Math.min(920, w - horizontalPad)));
     };
 
     updateDims();
     let timer: number | null = null;
     const ro = new ResizeObserver(() => {
+      if (scroller.clientWidth === lastMeasuredWidthRef.current) return;
       if (timer !== null) window.clearTimeout(timer);
-      timer = window.setTimeout(updateDims, 120);
+      timer = window.setTimeout(updateDims, 150);
     });
     ro.observe(scroller);
 
@@ -487,6 +556,7 @@ export function PdfReaderModal({
       if (progressTimerRef.current !== null) window.clearTimeout(progressTimerRef.current);
       if (zoomSettleTimerRef.current !== null) window.clearTimeout(zoomSettleTimerRef.current);
       if (rafZoomRef.current !== null) cancelAnimationFrame(rafZoomRef.current);
+      if (rafScrollRef.current !== null) cancelAnimationFrame(rafScrollRef.current);
       flushProgressNow();
 
       // Release every canvas GPU backing store immediately
@@ -605,14 +675,15 @@ export function PdfReaderModal({
     }
   }, [currentPage, loading, pageBoxes, syncRenderWindow]);
 
-  // Secondary IntersectionObserver for active page + sub-page offset tracking
+  // rAF-throttled scroll tracker for active page + sub-page offset (stable on touch screens)
   useEffect(() => {
     const scroller = scrollContainerRef.current;
     if (!scroller || pageBoxes.length === 0) return;
 
-    const handleScroll = () => {
+    const measureActivePage = () => {
+      rafScrollRef.current = null;
       const viewportCenter = scroller.scrollTop + scroller.clientHeight * 0.35;
-      let bestPage = currentPage;
+      let bestPage = currentPageRef.current;
       let bestDist = Number.POSITIVE_INFINITY;
       let offsetRatio = 0;
 
@@ -628,27 +699,88 @@ export function PdfReaderModal({
         }
       }
 
-      if (bestPage !== currentPage) {
+      if (bestPage !== currentPageRef.current) {
+        currentPageRef.current = bestPage;
         setCurrentPage(bestPage);
       }
-      scheduleProgressSave(bestPage, offsetRatio, pageBoxes.length, zoomScale);
+      scheduleProgressSave(bestPage, offsetRatio, pageBoxes.length, zoomScaleRef.current);
+    };
+
+    const handleScroll = () => {
+      if (rafScrollRef.current !== null) return;
+      rafScrollRef.current = requestAnimationFrame(measureActivePage);
     };
 
     scroller.addEventListener('scroll', handleScroll, { passive: true });
-    return () => scroller.removeEventListener('scroll', handleScroll);
-  }, [currentPage, pageBoxes.length, scheduleProgressSave, zoomScale]);
+    return () => {
+      scroller.removeEventListener('scroll', handleScroll);
+      if (rafScrollRef.current !== null) {
+        cancelAnimationFrame(rafScrollRef.current);
+        rafScrollRef.current = null;
+      }
+    };
+  }, [pageBoxes.length, scheduleProgressSave]);
+
+  // Preserve focal center (horizontal & vertical) whenever zoomScale commits so left/right panning stays centered
+  useLayoutEffect(() => {
+    const anchor = pendingFocalScrollRef.current;
+    const scroller = scrollContainerRef.current;
+    if (!anchor || !scroller) return;
+    pendingFocalScrollRef.current = null;
+
+    if (anchor.resetX) {
+      scroller.scrollLeft = 0;
+    } else {
+      const maxX = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+      scroller.scrollLeft = Math.min(
+        maxX,
+        Math.max(0, Math.round(anchor.xRatio * scroller.scrollWidth - scroller.clientWidth / 2))
+      );
+    }
+
+    const maxY = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    scroller.scrollTop = Math.min(
+      maxY,
+      Math.max(0, Math.round(anchor.yRatio * scroller.scrollHeight - scroller.clientHeight / 2))
+    );
+  }, [zoomScale, pageBoxes.length]);
+
+  const commitZoomWithFocalAnchor = useCallback((nextScale: number) => {
+    const clamped = clampPdfZoom(nextScale);
+    const scroller = scrollContainerRef.current;
+    if (scroller && scroller.scrollWidth > 0 && scroller.scrollHeight > 0) {
+      const prevZoom = zoomScaleRef.current;
+      const xRatio =
+        clamped <= 1.01
+          ? 0.5
+          : prevZoom <= 1.01
+            ? 0.5
+            : (scroller.scrollLeft + scroller.clientWidth / 2) / scroller.scrollWidth;
+      const yRatio = (scroller.scrollTop + scroller.clientHeight / 2) / scroller.scrollHeight;
+      pendingFocalScrollRef.current = {
+        xRatio: Math.min(1, Math.max(0, xRatio)),
+        yRatio: Math.min(1, Math.max(0, yRatio)),
+        resetX: clamped <= 1.01,
+      };
+    }
+    setLiveCssScale(1);
+    setZoomScale(clamped);
+  }, []);
 
   // Two-phase zoom commit helper: Phase 1 live CSS scale -> Phase 2 settled sharp re-render (200ms)
   const applyTwoPhaseZoom = useCallback(
     (nextScale: number, immediate = false) => {
       const clamped = clampPdfZoom(nextScale);
       if (immediate) {
-        setLiveCssScale(1);
-        setZoomScale(clamped);
+        if (zoomSettleTimerRef.current !== null) {
+          window.clearTimeout(zoomSettleTimerRef.current);
+          zoomSettleTimerRef.current = null;
+        }
+        commitZoomWithFocalAnchor(clamped);
         return;
       }
 
-      const ratio = clamped / zoomScale;
+      const ratio = clamped / zoomScaleRef.current;
       if (rafZoomRef.current !== null) cancelAnimationFrame(rafZoomRef.current);
       rafZoomRef.current = requestAnimationFrame(() => {
         setLiveCssScale(ratio);
@@ -658,11 +790,11 @@ export function PdfReaderModal({
         window.clearTimeout(zoomSettleTimerRef.current);
       }
       zoomSettleTimerRef.current = window.setTimeout(() => {
-        setLiveCssScale(1);
-        setZoomScale(clamped);
+        zoomSettleTimerRef.current = null;
+        commitZoomWithFocalAnchor(clamped);
       }, 200);
     },
-    [zoomScale]
+    [commitZoomWithFocalAnchor]
   );
 
   // Instant Jump (>5 pages uses auto, <=5 uses smooth)
@@ -720,46 +852,185 @@ export function PdfReaderModal({
     [applyTwoPhaseZoom, liveCssScale, zoomScale]
   );
 
-  // Touch pinch-to-zoom & double-tap (Fit-to-Width <-> 1.75x)
-  const handleTouchStart = useCallback(
-    (e: React.TouchEvent<HTMLDivElement>) => {
+  // Native non-passive touch listeners for rock-solid touch scrolling, deadzoned pinch-to-zoom,
+  // and accidental-scroll-proof double-tap toggle (Fit-to-Width <-> 1.75x)
+  useEffect(() => {
+    const scroller = scrollContainerRef.current;
+    if (!scroller) return;
+
+    const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 2) {
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
-        pinchStartDistRef.current = Math.hypot(dx, dy);
-        pinchStartScaleRef.current = zoomScale;
-      } else if (e.touches.length === 1) {
+        const dist = Math.hypot(dx, dy);
+        touchGestureRef.current.active = false;
+        touchGestureRef.current.wasMultiTouch = true;
+        lastTapRef.current = null;
+        if (dist >= 30) {
+          if (zoomSettleTimerRef.current !== null) {
+            window.clearTimeout(zoomSettleTimerRef.current);
+            zoomSettleTimerRef.current = null;
+          }
+          pinchStateRef.current = {
+            active: true,
+            engaged: false,
+            startDist: dist,
+            startScale: zoomScaleRef.current,
+            pendingScale: zoomScaleRef.current,
+            cooldownUntil: 0,
+          };
+        }
+        return;
+      }
+
+      if (e.touches.length === 1) {
         const target = e.target as HTMLElement | null;
         if (target?.closest('button, a, input, label, select')) {
+          touchGestureRef.current.active = false;
           return;
         }
         const now = Date.now();
-        if (now - lastTapTimeRef.current < 280) {
-          applyTwoPhaseZoom(zoomScale > 1.25 ? 1.0 : 1.75, true);
-          lastTapTimeRef.current = 0;
-        } else {
-          lastTapTimeRef.current = now;
+        if (now < pinchStateRef.current.cooldownUntil) {
+          touchGestureRef.current.active = false;
+          return;
         }
+        touchGestureRef.current = {
+          active: true,
+          startX: e.touches[0].clientX,
+          startY: e.touches[0].clientY,
+          startTime: now,
+          moved: false,
+          wasMultiTouch: false,
+        };
       }
-    },
-    [applyTwoPhaseZoom, zoomScale]
-  );
+    };
 
-  const handleTouchMove = useCallback(
-    (e: React.TouchEvent<HTMLDivElement>) => {
-      if (e.touches.length === 2 && pinchStartDistRef.current) {
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && pinchStateRef.current.active) {
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
         const dist = Math.hypot(dx, dy);
-        const factor = dist / pinchStartDistRef.current;
-        applyTwoPhaseZoom(pinchStartScaleRef.current * factor);
-      }
-    },
-    [applyTwoPhaseZoom]
-  );
 
-  const handleTouchEnd = useCallback(() => {
-    pinchStartDistRef.current = null;
+        // Require deliberate 16px pinch movement before zooming so light finger rests stay rock-steady
+        if (!pinchStateRef.current.engaged) {
+          if (Math.abs(dist - pinchStateRef.current.startDist) < 16) {
+            return;
+          }
+          pinchStateRef.current.engaged = true;
+        }
+
+        e.preventDefault();
+        const factor = dist / pinchStateRef.current.startDist;
+        const nextScale = clampPdfZoom(pinchStateRef.current.startScale * factor);
+        pinchStateRef.current.pendingScale = nextScale;
+        const cssRatio = nextScale / zoomScaleRef.current;
+
+        if (rafZoomRef.current !== null) cancelAnimationFrame(rafZoomRef.current);
+        rafZoomRef.current = requestAnimationFrame(() => {
+          setLiveCssScale(cssRatio);
+        });
+        return;
+      }
+
+      if (e.touches.length === 1 && touchGestureRef.current.active && !touchGestureRef.current.moved) {
+        const dx = e.touches[0].clientX - touchGestureRef.current.startX;
+        const dy = e.touches[0].clientY - touchGestureRef.current.startY;
+        if (Math.hypot(dx, dy) > 10) {
+          touchGestureRef.current.moved = true;
+        }
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (pinchStateRef.current.active && e.touches.length < 2) {
+        const { engaged, pendingScale } = pinchStateRef.current;
+        pinchStateRef.current = {
+          active: false,
+          engaged: false,
+          startDist: 0,
+          startScale: pendingScale,
+          pendingScale,
+          cooldownUntil: Date.now() + 350,
+        };
+        lastTapRef.current = null;
+        if (engaged) {
+          commitZoomWithFocalAnchor(pendingScale);
+        } else {
+          setLiveCssScale(1);
+        }
+        return;
+      }
+
+      if (e.touches.length === 0 && touchGestureRef.current.active) {
+        const gesture = touchGestureRef.current;
+        touchGestureRef.current.active = false;
+        const now = Date.now();
+        const isCleanTap =
+          !gesture.moved &&
+          !gesture.wasMultiTouch &&
+          now - gesture.startTime < 260 &&
+          now >= pinchStateRef.current.cooldownUntil;
+
+        if (!isCleanTap) {
+          lastTapRef.current = null;
+          return;
+        }
+
+        const prevTap = lastTapRef.current;
+        if (
+          prevTap &&
+          now - prevTap.time < 280 &&
+          Math.hypot(gesture.startX - prevTap.x, gesture.startY - prevTap.y) <= 32
+        ) {
+          lastTapRef.current = null;
+          commitZoomWithFocalAnchor(zoomScaleRef.current > 1.25 ? 1.0 : 1.75);
+        } else {
+          lastTapRef.current = { time: now, x: gesture.startX, y: gesture.startY };
+        }
+      }
+    };
+
+    scroller.addEventListener('touchstart', onTouchStart, { passive: true });
+    scroller.addEventListener('touchmove', onTouchMove, { passive: false });
+    scroller.addEventListener('touchend', onTouchEnd, { passive: true });
+    scroller.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+    return () => {
+      scroller.removeEventListener('touchstart', onTouchStart);
+      scroller.removeEventListener('touchmove', onTouchMove);
+      scroller.removeEventListener('touchend', onTouchEnd);
+      scroller.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, [commitZoomWithFocalAnchor]);
+
+  // Desktop click-and-drag horizontal/vertical panning when zoomed in (>100%)
+  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || zoomScaleRef.current <= 1.01) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('button, a, input, label, select')) return;
+    const scroller = scrollContainerRef.current;
+    if (!scroller) return;
+    mousePanRef.current = {
+      active: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      startScrollLeft: scroller.scrollLeft,
+      startScrollTop: scroller.scrollTop,
+    };
+  }, []);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!mousePanRef.current.active) return;
+    const scroller = scrollContainerRef.current;
+    if (!scroller) return;
+    const dx = e.clientX - mousePanRef.current.startX;
+    const dy = e.clientY - mousePanRef.current.startY;
+    scroller.scrollLeft = mousePanRef.current.startScrollLeft - dx;
+    scroller.scrollTop = mousePanRef.current.startScrollTop - dy;
+  }, []);
+
+  const handleMouseUpOrLeave = useCallback(() => {
+    mousePanRef.current.active = false;
   }, []);
 
   // Fullscreen toggle
@@ -838,25 +1109,21 @@ export function PdfReaderModal({
       className={`fixed inset-0 z-50 flex flex-col overscroll-none ${bgSurfaceClass}`}
     >
       {/* Top Minimal HUD */}
-      <header
-        className={`flex items-center justify-between gap-3 border-b border-[var(--border-subtle)] bg-[var(--surface-canvas)] px-3 py-2 text-[var(--text-primary)] transition-transform duration-150 safe-top sm:px-5 ${
-          hudVisible ? 'translate-y-0' : '-translate-y-full'
-        }`}
-      >
+      <header className="flex items-center justify-between gap-2 border-b border-[var(--border-subtle)] bg-[var(--surface-canvas)] px-2.5 py-2 text-[var(--text-primary)] safe-top sm:gap-3 sm:px-5">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
-            <span className="font-semibold text-[var(--text-primary)]">
+          <div className="hidden items-center gap-2 text-xs text-[var(--text-muted)] sm:flex">
+            <span className="font-semibold text-[var(--text-primary)] whitespace-nowrap">
               {mode === 'sample' ? 'Free Sample PDF' : 'Full PDF Edition'}
             </span>
             <span aria-hidden="true">·</span>
-            <span className="font-mono-tabular">
+            <span className="font-mono-tabular whitespace-nowrap">
               {totalPages > 0 ? `Page ${currentPage} of ${totalPages}` : 'Loading pages...'}
             </span>
           </div>
           <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{bookTitle}</p>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1 shrink-0 sm:gap-1.5">
           {/* Mobile Compact Theme Cycle (Light -> Sepia -> Dark) */}
           <button
             type="button"
@@ -936,8 +1203,8 @@ export function PdfReaderModal({
             </button>
           )}
 
-          {/* Two-Phase Zoom Controls */}
-          <div className="inline-flex items-center rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-canvas)]">
+          {/* Two-Phase Zoom Controls: compact [-][+] on mobile, [-] 100% [+] on sm+ */}
+          <div className="inline-flex items-center divide-x divide-[var(--border-subtle)] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-canvas)] sm:divide-x-0">
             <button
               type="button"
               onClick={() => applyTwoPhaseZoom(zoomScale - 0.25)}
@@ -950,7 +1217,7 @@ export function PdfReaderModal({
               type="button"
               onClick={() => applyTwoPhaseZoom(1, true)}
               aria-label="Reset PDF zoom to 100%"
-              className="font-mono-tabular px-2 text-xs font-medium text-[var(--text-primary)] whitespace-nowrap"
+              className="font-mono-tabular hidden h-9 items-center justify-center px-2 text-xs font-medium text-[var(--text-primary)] whitespace-nowrap sm:inline-flex"
             >
               {Math.round(zoomScale * liveCssScale * 100)}%
             </button>
@@ -971,7 +1238,7 @@ export function PdfReaderModal({
               onClick={() => void toggleOfflineSave()}
               disabled={offlineBusy}
               aria-label={offlineSaved ? 'Remove offline PDF copy' : 'Save PDF for offline reading'}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-canvas)] px-2.5 text-xs font-medium text-[var(--text-primary)] whitespace-nowrap hover:bg-[var(--surface-hover)] disabled:opacity-50"
+              className="inline-flex h-9 w-9 items-center justify-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-canvas)] text-xs font-medium text-[var(--text-primary)] whitespace-nowrap hover:bg-[var(--surface-hover)] disabled:opacity-50 md:w-auto md:px-2.5"
             >
               {offlineBusy ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
@@ -1005,7 +1272,7 @@ export function PdfReaderModal({
             type="button"
             onClick={onClose}
             aria-label="Close PDF reader"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] sm:h-10 sm:w-10"
           >
             <X className="h-5 w-5" aria-hidden="true" />
           </button>
@@ -1016,18 +1283,16 @@ export function PdfReaderModal({
       <div
         ref={scrollContainerRef}
         onWheel={handleWheel}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-        onClick={(e) => {
-          if (e.target === scrollContainerRef.current) {
-            setHudVisible((v) => !v);
-          }
-        }}
-        className="flex-1 overflow-auto overscroll-none touch-pan-y px-3 py-5 sm:px-6"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUpOrLeave}
+        onMouseLeave={handleMouseUpOrLeave}
+        className={`flex-1 overflow-auto overscroll-none select-none ${
+          isZoomed ? 'pdf-scroll-pannable cursor-grab active:cursor-grabbing' : 'pdf-scroll-locked'
+        }`}
       >
         {loading && (
-          <div className="mx-auto flex max-w-2xl flex-col items-center justify-center gap-3 py-20 text-center">
+          <div className="mx-auto flex max-w-2xl flex-col items-center justify-center gap-3 px-4 py-20 text-center">
             <Loader2 className="h-7 w-7 animate-spin text-[var(--text-primary)]" aria-hidden="true" />
             <p className="text-sm font-medium text-[var(--text-primary)]">
               Initializing PDF engine and loading {mode === 'sample' ? 'sample preview' : 'full book'}...
@@ -1077,7 +1342,7 @@ export function PdfReaderModal({
               transform: liveCssScale !== 1 ? `scale(${liveCssScale})` : undefined,
               transformOrigin: 'top center',
             }}
-            className="mx-auto flex flex-col items-center gap-4 will-change-transform"
+            className="flex w-max min-w-full flex-col items-center gap-4 px-3 py-5 will-change-transform sm:px-6"
           >
             {pageBoxes.map((box) => (
               <div
@@ -1167,13 +1432,9 @@ export function PdfReaderModal({
         )}
       </div>
 
-      {/* Auto-Hiding Bottom Scrubber & Instant Jump Bar */}
+      {/* Bottom Scrubber & Instant Jump Bar */}
       {totalPages > 0 && (
-        <footer
-          className={`flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border-subtle)] bg-[var(--surface-canvas)] px-4 py-2.5 text-[var(--text-primary)] transition-transform duration-150 safe-bottom ${
-            hudVisible ? 'translate-y-0' : 'translate-y-full'
-          }`}
-        >
+        <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border-subtle)] bg-[var(--surface-canvas)] px-3 py-2 text-[var(--text-primary)] safe-bottom sm:gap-3 sm:px-4 sm:py-2.5">
           <div className="flex items-center gap-1.5">
             <button
               type="button"

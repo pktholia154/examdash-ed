@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
   }
 
   const user = await verifyFirebaseIdToken(token);
-  if (!user || !user.emailVerified || user.isReviewerSession) {
+  if (!user || !user.emailVerified) {
     return NextResponse.json(
       { error: 'Verified user session required.' },
       { status: 403, headers: { 'Cache-Control': 'private, no-store' } }
